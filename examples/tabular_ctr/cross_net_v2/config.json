@@ -1,0 +1,42 @@
+{
+    "label_name": "label",
+    "model_structure": "crossnet_only",
+    "use_low_rank_mixture": false,
+    "low_rank": 32,
+    "num_experts": 4,
+    "embedding_dim": 10,
+    "batch_norm": false,
+    "dropout_rates": 0.0,
+    "stacked_dnn_hidden_units": [
+        500,
+        500,
+        500
+    ],
+    "parallel_dnn_hidden_units": [
+        500,
+        500,
+        500
+    ],
+    "num_cross_layers": 8,
+    "regularizer": 0.001,
+    "features": [
+        {
+            "target": "Hash2Feature",
+            "name": "user_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "item_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "tag_id",
+            "length": 1,
+            "default": ""
+        }
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "label_name": "label",
+    "regularizer": 1e-5,
+    "hidden_dim": 10,
+    "attention_dim": 16,
+    "attention_dropout": [
+        0.4,
+        0.4
+    ],
+    "features": [
+        {
+            "target": "Hash2Feature",
+            "name": "user_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "item_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "tag_id",
+            "length": 1,
+            "default": ""
+        }
+    ]
+}

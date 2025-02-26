@@ -1,0 +1,30 @@
+{
+    "label_name": "label",
+    "embedding_dim": 10,
+    "interaction_type": "SAM3A",
+    "aggregation": "weighted_pooling",
+    "num_interaction_layers": 2,
+    "use_residual": true,
+    "dropout_rates": 0,
+    "regularizer": 0.001,
+    "features": [
+        {
+            "target": "Hash2Feature",
+            "name": "user_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "item_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "tag_id",
+            "length": 1,
+            "default": ""
+        }
+    ]
+}

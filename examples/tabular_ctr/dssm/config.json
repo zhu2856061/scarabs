@@ -1,0 +1,40 @@
+{
+    "label_name": "label",
+    "embedding_dim": 10,
+    "user_features": [
+        "user_id"
+    ],
+    "user_tower_units": [
+        400,
+        400,
+        400
+    ],
+    "item_tower_units": [
+        400,
+        400,
+        400
+    ],
+    "dropout_rates": 0.2,
+    "batch_norm": true,
+    "regularizer": 0.01,
+    "features": [
+        {
+            "target": "Hash2Feature",
+            "name": "user_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "item_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "tag_id",
+            "length": 1,
+            "default": ""
+        }
+    ]
+}

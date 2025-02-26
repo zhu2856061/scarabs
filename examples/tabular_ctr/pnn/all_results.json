@@ -1,0 +1,20 @@
+{
+    "epoch": 27.0,
+    "eval_labels_mean": 0.334415,
+    "eval_loss": 0.2889680862426758,
+    "eval_preds_mean": 0.331465,
+    "eval_roc_auc": 0.9689754414513493,
+    "eval_runtime": 5.6944,
+    "eval_samples": 401372,
+    "eval_samples_per_second": 70485.931,
+    "eval_steps_per_second": 17.21,
+    "perplexity": 1.3350491214149587,
+    "train_labels_mean": 0.33176,
+    "train_loss": 0.0937,
+    "train_preds_mean": 0.331991,
+    "train_roc_auc": 0.998675,
+    "train_runtime": 513.7316,
+    "train_samples": 1404801,
+    "train_samples_per_second": 273450.384,
+    "train_steps_per_second": 66.766
+}

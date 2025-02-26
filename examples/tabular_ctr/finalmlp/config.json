@@ -1,0 +1,40 @@
+{
+    "label_name": "label",
+    "embedding_dim": 10,
+    "mlp1_hidden_units": [
+        400
+    ],
+    "mlp2_hidden_units": [
+        800
+    ],
+    "use_fs": true,
+    "fs_hidden_units": [
+        800
+    ],
+    "fs1_context": [],
+    "fs2_context": [],
+    "num_heads": 10,
+    "dropout_rates": 0.3,
+    "batch_norm": true,
+    "regularizer": 0.01,
+    "features": [
+        {
+            "target": "Hash2Feature",
+            "name": "user_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "item_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "tag_id",
+            "length": 1,
+            "default": ""
+        }
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "label_name": "label",
+    "embedding_dim": 10,
+    "num_cross_layers": 2,
+    "bridge_type": "hadamard_product",
+    "use_regulation_module": false,
+    "temperature": 1,
+    "batch_norm": true,
+    "dropout_rates": 0.1,
+    "regularizer": 0.01,
+    "features": [
+        {
+            "target": "Hash2Feature",
+            "name": "user_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "item_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "tag_id",
+            "length": 1,
+            "default": ""
+        }
+    ]
+}

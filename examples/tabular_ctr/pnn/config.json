@@ -1,0 +1,32 @@
+{
+    "label_name": "label",
+    "embedding_dim": 10,
+    "dnn_hidden_units": [
+        400,
+        400,
+        400
+    ],
+    "dropout_rates": 0.1,
+    "batch_norm": false,
+    "regularizer": 0.01,
+    "features": [
+        {
+            "target": "Hash2Feature",
+            "name": "user_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "item_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "tag_id",
+            "length": 1,
+            "default": ""
+        }
+    ]
+}

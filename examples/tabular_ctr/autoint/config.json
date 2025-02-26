@@ -1,0 +1,38 @@
+{
+    "label_name": "label",
+    "embedding_dim": 10,
+    "dnn_hidden_units": [
+        400,
+        400,
+        400
+    ],
+    "attention_layers": 2,
+    "num_heads": 4,
+    "attention_dim": 128,
+    "layer_norm": true,
+    "batch_norm": true,
+    "use_scale": true,
+    "use_residual": true,
+    "dropout_rates": 0.1,
+    "regularizer": 0.01,
+    "features": [
+        {
+            "target": "Hash2Feature",
+            "name": "user_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "item_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "tag_id",
+            "length": 1,
+            "default": ""
+        }
+    ]
+}

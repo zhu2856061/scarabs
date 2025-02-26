@@ -1,0 +1,38 @@
+{
+    "label_name": "label",
+    "embedding_dim": 10,
+    "block_type": "2B",
+    "use_field_gate": true,
+    "block1_hidden_units": [
+        400,
+        400
+    ],
+    "block1_dropout": 0,
+    "block2_hidden_units": [
+        500
+    ],
+    "block2_dropout": 0,
+    "residual_type": "concat",
+    "batch_norm": true,
+    "regularizer": 0.01,
+    "features": [
+        {
+            "target": "Hash2Feature",
+            "name": "user_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "item_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "tag_id",
+            "length": 1,
+            "default": ""
+        }
+    ]
+}

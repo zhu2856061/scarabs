@@ -1,0 +1,32 @@
+{
+    "label_name": "label",
+    "regularizer": 1e-3,
+    "embedding_size": 10,
+    "mlp_hidden_units": [
+        400,
+        400,
+        400
+    ],
+    "batch_norm": false,
+    "dropout_rates": 0.2,
+    "features": [
+        {
+            "target": "Hash2Feature",
+            "name": "user_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "item_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "tag_id",
+            "length": 1,
+            "default": ""
+        }
+    ]
+}

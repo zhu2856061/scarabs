@@ -1,0 +1,38 @@
+{
+    "label_name": "label",
+    "embedding_dim": 10,
+    "ensemble_dnn": true,
+    "dnn_hidden_units": [
+        400,
+        400,
+        400
+    ],
+    "afn_hidden_units": [
+        200
+    ],
+    "logarithmic_neurons": 800,
+    "regularizer": 0.001,
+    "num_cross_layers": 4,
+    "batch_norm": false,
+    "dropout_rates": 0.4,
+    "features": [
+        {
+            "target": "Hash2Feature",
+            "name": "user_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "item_id",
+            "length": 1,
+            "default": ""
+        },
+        {
+            "target": "Hash2Feature",
+            "name": "tag_id",
+            "length": 1,
+            "default": ""
+        }
+    ]
+}
