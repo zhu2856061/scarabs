@@ -14,7 +14,7 @@
     "optim": "adamw_torch",
     "logging_dir": "./encode/model",
     "logging_strategy": "epoch",
-    "save_strategy": "epoch",
+    "save_strategy": "best",
     "save_total_limit": 1,
     "save_safetensors": true,
     "lr_scheduler_type": "reduce_lr_on_plateau",

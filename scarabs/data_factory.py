@@ -456,7 +456,6 @@ class DataFactoryWithSFT(DataFactory):
             lambda _: self._tokenize_function(_, template),
             batched=False,
             num_proc=self.data_args.preprocessing_num_workers,
-            remove_columns=["text"],
             load_from_cache_file=not self.data_args.overwrite_cache,
             desc="Running tokenizer on dataset",
             cache_file_name=f"{self.dataset_cache}/cache/{dtype}.tokenize_function",

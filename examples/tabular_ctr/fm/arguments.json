@@ -32,7 +32,7 @@
     "metric_for_best_model": "eval_roc_auc",
     "greater_is_better": true,
     "use_cpu": false,
-    "seed": 2024,
+    "seed": 2025,
     "remove_unused_columns": false,
     "gradient_checkpointing": false,
     "load_best_model_at_end": false,

@@ -190,6 +190,9 @@ class ModelArguments:
         ):
             self.lora_target_modules = self.lora_target_modules[0]  # type: ignore
 
+        if self.tokenizer_name is None and self.model_name_or_path is not None:
+            self.tokenizer_name = self.model_name_or_path
+
 
 @dataclass
 class DataArguments:

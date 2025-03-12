@@ -5,12 +5,7 @@
 from __future__ import absolute_import, division, print_function
 
 import os
-import sys
 
-sys.path.append("../../..")
-
-import torch
-from torchinfo import summary
 from transformers import HfArgumentParser
 
 from scarabs.args_factory import DataArguments, ModelArguments, TrainArguments
@@ -37,14 +32,6 @@ model = CtrWithEDCN(config)  # type: ignore
 for name, param in model.named_parameters():
     print(f"Layer: {name}, Parameters: {param.numel()}")
 
-inputs = {}
-for name, fe in config.features.items():
-    inputs[name] = torch.randint(0, 1, (2, fe["length"]))
-summary(
-    model,
-    input_data=inputs,
-    depth=5,
-)
 task.train(model_args, data_args, training_args, model=model, config=config)
 
 

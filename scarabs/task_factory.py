@@ -17,6 +17,7 @@ import numpy as np
 import torch
 import transformers
 from loguru import logger
+from torchinfo import summary
 from tqdm import tqdm
 from transformers import (
     PretrainedConfig,
@@ -36,7 +37,6 @@ from scarabs.data_factory import (
     DataFactoryWithTabularRecall2,
 )
 from scarabs.model_factory import (
-    ModelFactoryWithContinuePretrain,
     ModelFactoryWithLLMClassification,
     ModelFactoryWithPretrain,
     ModelFactoryWithSFTFulltrain,
@@ -186,7 +186,14 @@ class TaskFactoryWithPreTrain(TaskFactory):
         self._seed(training_args)
 
         #  pretrain no compute metrics
-
+        # model show and data show
+        if ds_train is not None:
+            logger.info("\n Data Check >>>>>>>>>>>>> \n")
+            logger.info(ds_train[0])
+            logger.info("\n <<<<<<<<<<<<< Data Check \n")
+            summary(
+                model, depth=20, input_data=dataFactory.data_collator_fn([ds_train[0]])
+            )
         # data collator
         collator_fn = dataFactory.data_collator_fn
         # train
@@ -322,6 +329,325 @@ class TaskFactoryWithPreTrain(TaskFactory):
             return answer
 
 
+# sft full train factory
+class TaskFactoryWithSFTFulltrain(TaskFactory):
+    def __init__(self, metrics=["metrics/accuracy"]):
+        self.TASK = "TaskFactory sft full train"
+
+    def train(
+        self,
+        model_args: ModelArguments,
+        data_args: DataArguments,
+        training_args: TrainArguments,
+        model: Optional[PreTrainedModel] = None,
+        config: Optional[PretrainedConfig] = None,
+        llm_tokenizer: Optional[PreTrainedTokenizer] = None,
+        ds_train: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
+        ds_eval: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
+    ):
+        # model factory
+        modelFactory = ModelFactoryWithSFTFulltrain(
+            model_args=model_args,
+            model=model,
+            config=config,
+            llm_tokenizer=llm_tokenizer,
+        )
+        model = modelFactory.handle()
+        if model is None:
+            raise ValueError("No model found")
+
+        # data factory
+        dataFactory = DataFactoryWithSFT(
+            data_args=data_args,
+            training_args=training_args,
+            tokenizer=modelFactory.llm_tokenizer,
+        )
+        if ds_train is None and ds_eval is None:
+            ds_train, ds_eval = dataFactory.get_dataset()
+
+        if ds_train is None and ds_eval is None:
+            raise ValueError("No dataset found")
+
+        # runtimes
+        self._logging_summary(training_args)
+        self._load_last_checkpoint(training_args)
+        self._seed(training_args)
+
+        #  pretrain no compute metrics
+        # model show and data show
+        if ds_train is not None:
+            logger.info("\n Data Check >>>>>>>>>>>>> \n")
+            logger.info(ds_train[0])
+            logger.info("\n <<<<<<<<<<<<< Data Check \n")
+            summary(
+                model, depth=20, input_data=dataFactory.data_collator_fn([ds_train[0]])
+            )
+        # data collator
+        collator_fn = dataFactory.data_collator_fn
+        # train
+        trainer = TrainerFactoryWithPretrain(
+            model=model,
+            args=training_args,
+            train_dataset=ds_train,  # type: ignore
+            data_collator=collator_fn,
+            callbacks=[
+                PrettyTablePrinterCallback,  # type: ignore
+                EarlyStoppingByTrainDataCallback(
+                    training_args.early_stopping_patience,
+                    training_args.early_stopping_threshold,
+                ),
+            ],
+        )
+        # Training
+        if training_args.do_train:
+            checkpoint = None
+            if training_args.resume_from_checkpoint is not None:
+                checkpoint = training_args.resume_from_checkpoint
+            elif self.last_checkpoint is not None:
+                checkpoint = self.last_checkpoint
+            train_result = trainer.train(resume_from_checkpoint=checkpoint)
+            trainer.save_model()  # Saves the tokenizer too for easy upload
+            metrics = train_result.metrics
+            max_train_samples = (
+                data_args.max_train_samples
+                if data_args.max_train_samples is not None
+                else len(ds_train)  # type: ignore
+            )
+            metrics["train_samples"] = min(max_train_samples, len(ds_train))  # type: ignore
+
+            trainer.log_metrics("train", metrics)
+            trainer.save_metrics("train", metrics)
+            trainer.save_state()
+
+        # Evaluation
+        if training_args.do_eval:
+            logger.info("*** Evaluate ***")
+            metrics = trainer.evaluate()
+            max_eval_samples = (
+                data_args.max_eval_samples
+                if data_args.max_eval_samples is not None
+                else len(ds_eval)  # type: ignore
+            )
+            metrics["eval_samples"] = min(max_eval_samples, len(ds_eval))  # type: ignore
+
+            trainer.log_metrics("eval", metrics)
+            trainer.save_metrics("eval", metrics)
+
+    def inference_with_load_model(
+        self, tokenizer_name_or_path, model_name_or_path, modelFunc
+    ):
+        from transformers import AutoTokenizer
+
+        config = PretrainedConfig.from_pretrained(model_name_or_path)
+        # load model
+        self.model = modelFunc(config)
+        llm_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
+        modelFactory = ModelFactoryWithSFTFulltrain(
+            model_args=None,  # type: ignore
+            model=self.model,
+            config=config,
+            llm_tokenizer=llm_tokenizer,  # type: ignore
+        )
+        self.model = modelFactory._weight_init(self.model, model_name_or_path)
+        self.tokenizer = llm_tokenizer
+        # set
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)  # type: ignore
+        self.model.eval()
+
+    def inference(self, X, max_tokens=128):
+        with torch.no_grad():
+            i = 0
+            res = []
+            tokens = [-1]
+            X = self.tokenizer(X)
+            if X.get("input_ids") is None or X.get("attention_mask") is None:
+                return "input X is err"
+
+            while i < max_tokens and tokens[0] != self.tokenizer.pad_token_id:
+                inputs = {}
+                for name in X:
+                    if name not in ["input_ids", "attention_mask"]:
+                        continue
+                    inputs[name] = torch.tensor([X[name]], dtype=torch.long).to(
+                        self.device
+                    )
+
+                output = self.model(**inputs)
+                logits = output.logits
+                tokens = torch.argmax(logits, dim=-1)
+                tokens = tokens[0].tolist()[:-2:-1]
+                X["input_ids"] = X["input_ids"] + tokens  # type: ignore
+                X["attention_mask"] = X["attention_mask"] + [1]  # type: ignore
+                res += tokens
+                i += 1
+
+            answer = self.tokenizer.decode(res)
+            return answer
+
+
+# sft lora train factory
+class TaskFactoryWithSFTLoratrain(TaskFactory):
+    def __init__(self, metrics=["metrics/accuracy"]):
+        self.TASK = "TaskFactory sft lora train"
+
+    def train(
+        self,
+        model_args: ModelArguments,
+        data_args: DataArguments,
+        training_args: TrainArguments,
+        model: Optional[PreTrainedModel] = None,
+        config: Optional[PretrainedConfig] = None,
+        llm_tokenizer: Optional[PreTrainedTokenizer] = None,
+        ds_train: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
+        ds_eval: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
+    ):
+        # model factory
+        modelFactory = ModelFactoryWithSFTLoratrain(
+            model_args=model_args,
+            model=model,
+            config=config,
+            llm_tokenizer=llm_tokenizer,
+        )
+        model = modelFactory.handle()  # type: ignore
+        if model is None:
+            raise ValueError("No model found")
+
+        # data factory
+        dataFactory = DataFactoryWithSFT(
+            data_args=data_args,
+            training_args=training_args,
+            tokenizer=modelFactory.llm_tokenizer,
+        )
+        if ds_train is None and ds_eval is None:
+            ds_train, ds_eval = dataFactory.get_dataset()
+
+        if ds_train is None and ds_eval is None:
+            raise ValueError("No dataset found")
+
+        # runtimes
+        self._logging_summary(training_args)
+        self._load_last_checkpoint(training_args)
+        self._seed(training_args)
+
+        #  pretrain no compute metrics
+        # model show and data show
+        if ds_train is not None:
+            logger.info("\n Data Check >>>>>>>>>>>>> \n")
+            logger.info(ds_train[0])
+            logger.info("\n <<<<<<<<<<<<< Data Check \n")
+            summary(
+                model, depth=20, input_data=dataFactory.data_collator_fn([ds_train[0]])
+            )
+        # data collator
+        collator_fn = dataFactory.data_collator_fn
+        # train
+        training_args.ddp_find_unused_parameters = False  # !!! lora is need for ddp
+        trainer = TrainerFactoryWithPretrain(
+            model=model,
+            args=training_args,
+            train_dataset=ds_train,  # type: ignore
+            data_collator=collator_fn,
+            callbacks=[
+                PrettyTablePrinterCallback,  # type: ignore
+                EarlyStoppingByTrainDataCallback(
+                    training_args.early_stopping_patience,
+                    training_args.early_stopping_threshold,
+                ),
+            ],
+        )
+        # Training
+        if training_args.do_train:
+            checkpoint = None
+            if training_args.resume_from_checkpoint is not None:
+                checkpoint = training_args.resume_from_checkpoint
+            elif self.last_checkpoint is not None:
+                checkpoint = self.last_checkpoint
+            train_result = trainer.train(resume_from_checkpoint=checkpoint)
+            trainer.save_model()  # Saves the tokenizer too for easy upload
+            metrics = train_result.metrics
+            max_train_samples = (
+                data_args.max_train_samples
+                if data_args.max_train_samples is not None
+                else len(ds_train)  # type: ignore
+            )
+            metrics["train_samples"] = min(max_train_samples, len(ds_train))  # type: ignore
+
+            trainer.log_metrics("train", metrics)
+            trainer.save_metrics("train", metrics)
+            trainer.save_state()
+
+        # Evaluation
+        if training_args.do_eval:
+            logger.info("*** Evaluate ***")
+            metrics = trainer.evaluate()
+            max_eval_samples = (
+                data_args.max_eval_samples
+                if data_args.max_eval_samples is not None
+                else len(ds_eval)  # type: ignore
+            )
+            metrics["eval_samples"] = min(max_eval_samples, len(ds_eval))  # type: ignore
+            trainer.log_metrics("eval", metrics)
+            trainer.save_metrics("eval", metrics)
+
+    def inference_with_load_model(
+        self, tokenizer_name_or_path, model_name_or_path, modelFunc
+    ):
+        from peft.peft_model import PeftModel
+        from transformers import AutoTokenizer
+
+        config = PretrainedConfig.from_pretrained(model_name_or_path)
+        # load model
+        self.model = modelFunc(config)
+        llm_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
+        modelFactory = ModelFactoryWithPretrain(
+            model_args=None,  # type: ignore
+            model=self.model,
+            config=config,
+            llm_tokenizer=llm_tokenizer,  # type: ignore
+        )
+        self.model = modelFactory._weight_init(self.model, model_name_or_path)
+
+        self.model = PeftModel.from_pretrained(
+            model=self.model, model_id=model_name_or_path
+        )
+        self.tokenizer = llm_tokenizer
+        # set
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)  # type: ignore
+        self.model.eval()
+
+    def inference(self, X, max_tokens=128):
+        with torch.no_grad():
+            i = 0
+            res = []
+            tokens = [-1]
+            X = self.tokenizer(X)
+            if X.get("input_ids") is None or X.get("attention_mask") is None:
+                return "input X is err"
+
+            while i < max_tokens and tokens[0] != self.tokenizer.pad_token_id:
+                inputs = {}
+                for name in X:
+                    if name not in ["input_ids", "attention_mask"]:
+                        continue
+                    inputs[name] = torch.tensor([X[name]], dtype=torch.long).to(
+                        self.device
+                    )
+
+                output = self.model(**inputs)
+                logits = output.logits
+                tokens = torch.argmax(logits, dim=-1)
+                tokens = tokens[0].tolist()[:-2:-1]
+                X["input_ids"] = X["input_ids"] + tokens  # type: ignore
+                X["attention_mask"] = X["attention_mask"] + [1]  # type: ignore
+                res += tokens
+                i += 1
+
+            answer = self.tokenizer.decode(res)
+            return answer
+
+
 # LLM Classification
 class TaskFactoryWithLLMClassification(TaskFactory):
     def __init__(
@@ -385,6 +711,14 @@ class TaskFactoryWithLLMClassification(TaskFactory):
             res = self._metric.compute(predictions=logits, references=labels)
             return res
 
+        # model show and data show
+        if ds_train is not None:
+            logger.info("\n Data Check >>>>>>>>>>>>> \n")
+            logger.info(ds_train[0])
+            logger.info("\n <<<<<<<<<<<<< Data Check \n")
+            summary(
+                model, depth=20, input_data=dataFactory.data_collator_fn([ds_train[0]])
+            )
         # data collator
         collator_fn = dataFactory.data_collator_fn
         # train
@@ -561,6 +895,14 @@ class TaskFactoryWithTabularClassification(TaskFactory):
             res = self._metric.compute(predictions=logits, references=labels)
             return res
 
+        # model show and data show
+        if ds_train is not None:
+            logger.info("\n Data Check >>>>>>>>>>>>> \n")
+            logger.info(ds_train[0])
+            logger.info("\n <<<<<<<<<<<<< Data Check \n")
+            summary(
+                model, depth=20, input_data=dataFactory.data_collator_fn([ds_train[0]])
+            )
         # data collator
         collator_fn = dataFactory.data_collator_fn
         # train
@@ -721,6 +1063,14 @@ class TaskFactoryWithTabularCtr(TaskFactory):
             res = self._metric.compute(prediction_scores=logits, references=labels)
             return res
 
+        # model show and data show
+        if ds_train is not None:
+            logger.info("\n Data Check >>>>>>>>>>>>> \n")
+            logger.info(ds_train[0])
+            logger.info("\n <<<<<<<<<<<<< Data Check \n")
+            summary(
+                model, depth=20, input_data=dataFactory.data_collator_fn([ds_train[0]])
+            )
         # data collator
         collator_fn = dataFactory.data_collator_fn
         # train
@@ -910,6 +1260,14 @@ class TaskFactoryWithTabularRecall(TaskFactory):
                 )
                 return res
 
+        # model show and data show
+        if ds_train is not None:
+            logger.info("\n Data Check >>>>>>>>>>>>> \n")
+            logger.info(ds_train[0])
+            logger.info("\n <<<<<<<<<<<<< Data Check \n")
+            summary(
+                model, depth=20, input_data=dataFactory.data_collator_fn([ds_train[0]])
+            )
         # data collator
         collator_fn = dataFactory.data_collator_fn
         # train
@@ -1100,6 +1458,14 @@ class TaskFactoryWithTabularRecall2(TaskFactory):
                 )
                 return res
 
+        # model show and data show
+        if ds_train is not None:
+            logger.info("\n Data Check >>>>>>>>>>>>> \n")
+            logger.info(ds_train[0])
+            logger.info("\n <<<<<<<<<<<<< Data Check \n")
+            summary(
+                model, depth=20, input_data=dataFactory.data_collator_fn([ds_train[0]])
+            )
         # data collator
         collator_fn = dataFactory.data_collator_fn
         # train
@@ -1315,6 +1681,14 @@ class TaskFactoryWithTabularMultiLabelClassification(TaskFactory):
                 "f1_macro": _f1["f1"],
             }
 
+        # model show and data show
+        if ds_train is not None:
+            logger.info("\n Data Check >>>>>>>>>>>>> \n")
+            logger.info(ds_train[0])
+            logger.info("\n <<<<<<<<<<<<< Data Check \n")
+            summary(
+                model, depth=20, input_data=dataFactory.data_collator_fn([ds_train[0]])
+            )
         # data collator
         collator_fn = dataFactory.data_collator_fn
         # train
@@ -1393,459 +1767,3 @@ class TaskFactoryWithTabularMultiLabelClassification(TaskFactory):
             for name in X:
                 X[name] = torch.tensor([X[name]], dtype=torch.long).to(self.device)  # type: ignore
             return self.model(**X)
-
-
-# continue pre train factory
-class TaskFactoryWithContinuePreTrain(TaskFactory):
-    def __init__(self, metrics=["metrics/accuracy"]):
-        self.TASK = "TaskFactory continue pre train"
-
-    def train(
-        self,
-        model_args: ModelArguments,
-        data_args: DataArguments,
-        training_args: TrainArguments,
-        model: Optional[PreTrainedModel],
-        config: Optional[PretrainedConfig] = None,
-        llm_tokenizer: Optional[PreTrainedTokenizer] = None,
-        ds_train: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
-        ds_eval: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
-    ):
-        if model is None:
-            raise ValueError("PreTrain need define model")
-        # model factory
-        modelFactory = ModelFactoryWithContinuePretrain(
-            model_args=model_args,
-            model=model,
-            config=config,
-            llm_tokenizer=llm_tokenizer,
-        )
-        model = modelFactory.handle()
-        if model is None:
-            raise ValueError("No model found")
-
-        # data factory
-        dataFactory = DataFactoryWithPretrain(
-            data_args=data_args,
-            training_args=training_args,
-            tokenizer=modelFactory.llm_tokenizer,
-        )
-        if ds_train is None and ds_eval is None:
-            ds_train, ds_eval = dataFactory.get_dataset()
-
-        if ds_train is None and ds_eval is None:
-            raise ValueError("No dataset found")
-
-        # runtimes
-        self._logging_summary(training_args)
-        self._load_last_checkpoint(training_args)
-        self._seed(training_args)
-
-        #  pretrain no compute metrics
-
-        # data collator
-        collator_fn = dataFactory.data_collator_fn
-        # train
-        trainer = TrainerFactoryWithPretrain(
-            model=model,
-            args=training_args,
-            train_dataset=ds_train,  # type: ignore
-            data_collator=collator_fn,
-            callbacks=[
-                PrettyTablePrinterCallback,  # type: ignore
-                EarlyStoppingByTrainDataCallback(
-                    training_args.early_stopping_patience,
-                    training_args.early_stopping_threshold,
-                ),
-            ],
-        )
-        # Training
-        if training_args.do_train:
-            checkpoint = None
-            if training_args.resume_from_checkpoint is not None:
-                checkpoint = training_args.resume_from_checkpoint
-            elif self.last_checkpoint is not None:
-                checkpoint = self.last_checkpoint
-            train_result = trainer.train(resume_from_checkpoint=checkpoint)
-            trainer.save_model()  # Saves the tokenizer too for easy upload
-            metrics = train_result.metrics
-            max_train_samples = (
-                data_args.max_train_samples
-                if data_args.max_train_samples is not None
-                else len(ds_train)  # type: ignore
-            )
-            metrics["train_samples"] = min(max_train_samples, len(ds_train))  # type: ignore
-
-            trainer.log_metrics("train", metrics)
-            trainer.save_metrics("train", metrics)
-            trainer.save_state()
-
-        # Evaluation
-        if training_args.do_eval:
-            logger.info("*** Evaluate ***")
-            metrics = trainer.evaluate()
-            max_eval_samples = (
-                data_args.max_eval_samples
-                if data_args.max_eval_samples is not None
-                else len(ds_eval)  # type: ignore
-            )
-            metrics["eval_samples"] = min(max_eval_samples, len(ds_eval))  # type: ignore
-            trainer.log_metrics("eval", metrics)
-            trainer.save_metrics("eval", metrics)
-
-    def inference_with_load_model(
-        self, tokenizer_name_or_path, model_name_or_path, modelFunc
-    ):
-        from transformers import AutoTokenizer
-
-        config = PretrainedConfig.from_pretrained(model_name_or_path)
-        # load model
-        self.model = modelFunc(config)
-        llm_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
-        modelFactory = ModelFactoryWithPretrain(
-            model_args=None,  # type: ignore
-            model=self.model,
-            config=config,
-            llm_tokenizer=llm_tokenizer,  # type: ignore
-        )
-        self.model = modelFactory._weight_init(self.model, model_name_or_path)
-        self.tokenizer = llm_tokenizer
-        # set
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)  # type: ignore
-        self.model.eval()
-
-    def inference(self, X, max_tokens=128):
-        with torch.no_grad():
-            i = 0
-            res = []
-            tokens = [-1]
-            X = self.tokenizer(X)
-            if X.get("input_ids") is None or X.get("attention_mask") is None:
-                return "input X is err"
-
-            while i < max_tokens and tokens[0] != self.tokenizer.pad_token_id:
-                inputs = {}
-                for name in X:
-                    if name not in ["input_ids", "attention_mask"]:
-                        continue
-                    inputs[name] = torch.tensor([X[name]], dtype=torch.long).to(
-                        self.device
-                    )
-
-                output = self.model(**inputs)
-                logits = output.logits
-                tokens = torch.argmax(logits, dim=-1)
-                tokens = tokens[0].tolist()[:-2:-1]
-                X["input_ids"] = X["input_ids"] + tokens  # type: ignore
-                X["attention_mask"] = X["attention_mask"] + [1]  # type: ignore
-                res += tokens
-                i += 1
-
-            answer = self.tokenizer.decode(res)
-            return answer
-
-
-# sft full train factory
-class TaskFactoryWithSFTFulltrain(TaskFactory):
-    def __init__(self, metrics=["metrics/accuracy"]):
-        self.TASK = "TaskFactory sft full train"
-
-    def train(
-        self,
-        model_args: ModelArguments,
-        data_args: DataArguments,
-        training_args: TrainArguments,
-        model: Optional[PreTrainedModel] = None,
-        config: Optional[PretrainedConfig] = None,
-        llm_tokenizer: Optional[PreTrainedTokenizer] = None,
-        ds_train: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
-        ds_eval: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
-    ):
-        # model factory
-        modelFactory = ModelFactoryWithSFTFulltrain(
-            model_args=model_args,
-            model=model,
-            config=config,
-            llm_tokenizer=llm_tokenizer,
-        )
-        model = modelFactory.handle()
-        if model is None:
-            raise ValueError("No model found")
-
-        # data factory
-        dataFactory = DataFactoryWithSFT(
-            data_args=data_args,
-            training_args=training_args,
-            tokenizer=modelFactory.llm_tokenizer,
-        )
-        if ds_train is None and ds_eval is None:
-            ds_train, ds_eval = dataFactory.get_dataset()
-
-        if ds_train is None and ds_eval is None:
-            raise ValueError("No dataset found")
-
-        # runtimes
-        self._logging_summary(training_args)
-        self._load_last_checkpoint(training_args)
-        self._seed(training_args)
-
-        #  pretrain no compute metrics
-
-        # data collator
-        collator_fn = dataFactory.data_collator_fn
-        # train
-        trainer = TrainerFactoryWithPretrain(
-            model=model,
-            args=training_args,
-            train_dataset=ds_train,  # type: ignore
-            data_collator=collator_fn,
-            callbacks=[
-                PrettyTablePrinterCallback,  # type: ignore
-                EarlyStoppingByTrainDataCallback(
-                    training_args.early_stopping_patience,
-                    training_args.early_stopping_threshold,
-                ),
-            ],
-        )
-        # Training
-        if training_args.do_train:
-            checkpoint = None
-            if training_args.resume_from_checkpoint is not None:
-                checkpoint = training_args.resume_from_checkpoint
-            elif self.last_checkpoint is not None:
-                checkpoint = self.last_checkpoint
-            train_result = trainer.train(resume_from_checkpoint=checkpoint)
-            trainer.save_model()  # Saves the tokenizer too for easy upload
-            metrics = train_result.metrics
-            max_train_samples = (
-                data_args.max_train_samples
-                if data_args.max_train_samples is not None
-                else len(ds_train)  # type: ignore
-            )
-            metrics["train_samples"] = min(max_train_samples, len(ds_train))  # type: ignore
-
-            trainer.log_metrics("train", metrics)
-            trainer.save_metrics("train", metrics)
-            trainer.save_state()
-
-        # Evaluation
-        if training_args.do_eval:
-            logger.info("*** Evaluate ***")
-            metrics = trainer.evaluate()
-            max_eval_samples = (
-                data_args.max_eval_samples
-                if data_args.max_eval_samples is not None
-                else len(ds_eval)  # type: ignore
-            )
-            metrics["eval_samples"] = min(max_eval_samples, len(ds_eval))  # type: ignore
-
-            trainer.log_metrics("eval", metrics)
-            trainer.save_metrics("eval", metrics)
-
-    def inference_with_load_model(
-        self, tokenizer_name_or_path, model_name_or_path, modelFunc
-    ):
-        from transformers import AutoTokenizer
-
-        config = PretrainedConfig.from_pretrained(model_name_or_path)
-        # load model
-        self.model = modelFunc(config)
-        llm_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
-        modelFactory = ModelFactoryWithSFTFulltrain(
-            model_args=None,  # type: ignore
-            model=self.model,
-            config=config,
-            llm_tokenizer=llm_tokenizer,  # type: ignore
-        )
-        self.model = modelFactory._weight_init(self.model, model_name_or_path)
-        self.tokenizer = llm_tokenizer
-        # set
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)  # type: ignore
-        self.model.eval()
-
-    def inference(self, X, max_tokens=128):
-        with torch.no_grad():
-            i = 0
-            res = []
-            tokens = [-1]
-            X = self.tokenizer(X)
-            if X.get("input_ids") is None or X.get("attention_mask") is None:
-                return "input X is err"
-
-            while i < max_tokens and tokens[0] != self.tokenizer.pad_token_id:
-                inputs = {}
-                for name in X:
-                    if name not in ["input_ids", "attention_mask"]:
-                        continue
-                    inputs[name] = torch.tensor([X[name]], dtype=torch.long).to(
-                        self.device
-                    )
-
-                output = self.model(**inputs)
-                logits = output.logits
-                tokens = torch.argmax(logits, dim=-1)
-                tokens = tokens[0].tolist()[:-2:-1]
-                X["input_ids"] = X["input_ids"] + tokens  # type: ignore
-                X["attention_mask"] = X["attention_mask"] + [1]  # type: ignore
-                res += tokens
-                i += 1
-
-            answer = self.tokenizer.decode(res)
-            return answer
-
-
-# sft lora train factory
-class TaskFactoryWithSFTLoratrain(TaskFactory):
-    def __init__(self, metrics=["metrics/accuracy"]):
-        self.TASK = "TaskFactory sft lora train"
-
-    def train(
-        self,
-        model_args: ModelArguments,
-        data_args: DataArguments,
-        training_args: TrainArguments,
-        model: Optional[PreTrainedModel] = None,
-        config: Optional[PretrainedConfig] = None,
-        llm_tokenizer: Optional[PreTrainedTokenizer] = None,
-        ds_train: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
-        ds_eval: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
-    ):
-        # model factory
-        modelFactory = ModelFactoryWithSFTLoratrain(
-            model_args=model_args,
-            model=model,
-            config=config,
-            llm_tokenizer=llm_tokenizer,
-        )
-        model = modelFactory.handle()  # type: ignore
-        if model is None:
-            raise ValueError("No model found")
-
-        # data factory
-        dataFactory = DataFactoryWithSFT(
-            data_args=data_args,
-            training_args=training_args,
-            tokenizer=modelFactory.llm_tokenizer,
-        )
-        if ds_train is None and ds_eval is None:
-            ds_train, ds_eval = dataFactory.get_dataset()
-
-        if ds_train is None and ds_eval is None:
-            raise ValueError("No dataset found")
-
-        # runtimes
-        self._logging_summary(training_args)
-        self._load_last_checkpoint(training_args)
-        self._seed(training_args)
-
-        #  pretrain no compute metrics
-
-        # data collator
-        collator_fn = dataFactory.data_collator_fn
-        # train
-        training_args.ddp_find_unused_parameters = False  # !!! lora is need for ddp
-        trainer = TrainerFactoryWithPretrain(
-            model=model,
-            args=training_args,
-            train_dataset=ds_train,  # type: ignore
-            data_collator=collator_fn,
-            callbacks=[
-                PrettyTablePrinterCallback,  # type: ignore
-                EarlyStoppingByTrainDataCallback(
-                    training_args.early_stopping_patience,
-                    training_args.early_stopping_threshold,
-                ),
-            ],
-        )
-        # Training
-        if training_args.do_train:
-            checkpoint = None
-            if training_args.resume_from_checkpoint is not None:
-                checkpoint = training_args.resume_from_checkpoint
-            elif self.last_checkpoint is not None:
-                checkpoint = self.last_checkpoint
-            train_result = trainer.train(resume_from_checkpoint=checkpoint)
-            trainer.save_model()  # Saves the tokenizer too for easy upload
-            metrics = train_result.metrics
-            max_train_samples = (
-                data_args.max_train_samples
-                if data_args.max_train_samples is not None
-                else len(ds_train)  # type: ignore
-            )
-            metrics["train_samples"] = min(max_train_samples, len(ds_train))  # type: ignore
-
-            trainer.log_metrics("train", metrics)
-            trainer.save_metrics("train", metrics)
-            trainer.save_state()
-
-        # Evaluation
-        if training_args.do_eval:
-            logger.info("*** Evaluate ***")
-            metrics = trainer.evaluate()
-            max_eval_samples = (
-                data_args.max_eval_samples
-                if data_args.max_eval_samples is not None
-                else len(ds_eval)  # type: ignore
-            )
-            metrics["eval_samples"] = min(max_eval_samples, len(ds_eval))  # type: ignore
-            trainer.log_metrics("eval", metrics)
-            trainer.save_metrics("eval", metrics)
-
-    def inference_with_load_model(
-        self, tokenizer_name_or_path, model_name_or_path, modelFunc
-    ):
-        from peft.peft_model import PeftModel
-        from transformers import AutoTokenizer
-
-        config = PretrainedConfig.from_pretrained(model_name_or_path)
-        # load model
-        self.model = modelFunc(config)
-        llm_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
-        modelFactory = ModelFactoryWithPretrain(
-            model_args=None,  # type: ignore
-            model=self.model,
-            config=config,
-            llm_tokenizer=llm_tokenizer,  # type: ignore
-        )
-        self.model = modelFactory._weight_init(self.model, model_name_or_path)
-
-        self.model = PeftModel.from_pretrained(
-            model=self.model, model_id=model_name_or_path
-        )
-        self.tokenizer = llm_tokenizer
-        # set
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)  # type: ignore
-        self.model.eval()
-
-    def inference(self, X, max_tokens=128):
-        with torch.no_grad():
-            i = 0
-            res = []
-            tokens = [-1]
-            X = self.tokenizer(X)
-            if X.get("input_ids") is None or X.get("attention_mask") is None:
-                return "input X is err"
-
-            while i < max_tokens and tokens[0] != self.tokenizer.pad_token_id:
-                inputs = {}
-                for name in X:
-                    if name not in ["input_ids", "attention_mask"]:
-                        continue
-                    inputs[name] = torch.tensor([X[name]], dtype=torch.long).to(
-                        self.device
-                    )
-
-                output = self.model(**inputs)
-                logits = output.logits
-                tokens = torch.argmax(logits, dim=-1)
-                tokens = tokens[0].tolist()[:-2:-1]
-                X["input_ids"] = X["input_ids"] + tokens  # type: ignore
-                X["attention_mask"] = X["attention_mask"] + [1]  # type: ignore
-                res += tokens
-                i += 1
-
-            answer = self.tokenizer.decode(res)
-            return answer

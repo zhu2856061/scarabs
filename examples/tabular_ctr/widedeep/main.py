@@ -5,12 +5,7 @@
 from __future__ import absolute_import, division, print_function
 
 import os
-import sys
 
-sys.path.append("../../..")
-
-import torch
-from torchinfo import summary
 from transformers import HfArgumentParser
 
 from scarabs.args_factory import DataArguments, ModelArguments, TrainArguments
@@ -32,16 +27,7 @@ model_args, data_args, training_args = parser.parse_json_file("arguments.json")
 config = CtrWithWideDeepConfig.from_pretrained(
     os.path.join(data_args.dataset_cache, "meta")
 )
-
 model = CtrWithWideDeep(config)  # type: ignore
-inputs = {}
-for name, fe in config.features.items():
-    inputs[name] = torch.randint(0, 1, (2, fe["length"]))
-summary(
-    model,
-    input_data=inputs,
-    depth=5,
-)
 task.train(model_args, data_args, training_args, model=model, config=config)
 
 

@@ -18,7 +18,7 @@ from typing import (  # noqa: F401
 
 import torch
 from loguru import logger
-from peft import (
+from peft import (  # noqa: F401
     AdaLoraConfig,
     AdaptionPromptConfig,
     IA3Config,
@@ -47,6 +47,7 @@ from transformers import (
 from transformers.modeling_utils import _load_state_dict_into_model
 
 from scarabs.args_factory import ModelArguments
+from scarabs.mora.utils.tools import set_color
 
 
 class ModelFactory:
@@ -368,17 +369,22 @@ class ModelFactoryWithSFTLoratrain(ModelFactory):
                 output.requires_grad_(True)
 
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-
-        # get k,q,v,o
-        lora_module_names = set()
-        for name, module in model.named_modules():
-            if (
-                isinstance(module, torch.nn.Linear)
-                and "mlp" not in name
-                and "lm_head" not in name
-            ):
-                lora_module_names.add(name.split(".")[-1])
-
+        if self.model_args.lora_target_modules is not None:
+            lora_module_names = self.model_args.lora_target_modules
+        else:
+            # get k,q,v,o
+            lora_module_names = set()
+            for name, module in model.named_modules():
+                if (
+                    isinstance(module, torch.nn.Linear)
+                    and "mlp" not in name
+                    and "lm_head" not in name
+                ):
+                    lora_module_names.add(name.split(".")[-1])
+        logger.info(set_color("\n lora_module_names >>>>>>>>>>>>> \n", "green"))
+        for m in lora_module_names:
+            logger.info(set_color(f"{m}", "green"))
+        logger.info(set_color("\n <<<<<<<<<<<<< lora_module_names \n", "green"))
         # lora tuning setup
         peft_config = LoraConfig(
             task_type=conf.sft_task_type,
