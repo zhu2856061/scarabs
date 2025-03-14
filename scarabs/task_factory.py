@@ -29,6 +29,7 @@ from transformers.trainer_utils import get_last_checkpoint
 
 from scarabs.args_factory import DataArguments, ModelArguments, TrainArguments
 from scarabs.data_factory import (
+    DataFactoryWithDPO,
     DataFactoryWithLLMClassification,
     DataFactoryWithPretrain,
     DataFactoryWithSFT,
@@ -39,16 +40,17 @@ from scarabs.data_factory import (
 from scarabs.model_factory import (
     ModelFactoryWithLLMClassification,
     ModelFactoryWithPretrain,
-    ModelFactoryWithSFTFulltrain,
-    ModelFactoryWithSFTLoratrain,
+    ModelFactoryWithSFTtrain,
     ModelFactoryWithTabular,
 )
 from scarabs.train_factory import (
     EarlyStoppingByEvalDataCallback,
     EarlyStoppingByTrainDataCallback,
     PrettyTablePrinterCallback,
+    TrainerFactoryWithDPO,
     TrainerFactoryWithLLMClassification,
     TrainerFactoryWithPretrain,
+    TrainerFactoryWithSFT,
     TrainerFactoryWithTabular,
     TrainerFactoryWithTabularRecall,
     TrainerFactoryWithTabularRecall2,
@@ -330,7 +332,7 @@ class TaskFactoryWithPreTrain(TaskFactory):
 
 
 # sft full train factory
-class TaskFactoryWithSFTFulltrain(TaskFactory):
+class TaskFactoryWithSFTtrain(TaskFactory):
     def __init__(self, metrics=["metrics/accuracy"]):
         self.TASK = "TaskFactory sft full train"
 
@@ -346,7 +348,7 @@ class TaskFactoryWithSFTFulltrain(TaskFactory):
         ds_eval: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
     ):
         # model factory
-        modelFactory = ModelFactoryWithSFTFulltrain(
+        modelFactory = ModelFactoryWithSFTtrain(
             model_args=model_args,
             model=model,
             config=config,
@@ -385,7 +387,7 @@ class TaskFactoryWithSFTFulltrain(TaskFactory):
         # data collator
         collator_fn = dataFactory.data_collator_fn
         # train
-        trainer = TrainerFactoryWithPretrain(
+        trainer = TrainerFactoryWithSFT(
             model=model,
             args=training_args,
             train_dataset=ds_train,  # type: ignore
@@ -442,7 +444,7 @@ class TaskFactoryWithSFTFulltrain(TaskFactory):
         # load model
         self.model = modelFunc(config)
         llm_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
-        modelFactory = ModelFactoryWithSFTFulltrain(
+        modelFactory = ModelFactoryWithSFTtrain(
             model_args=None,  # type: ignore
             model=self.model,
             config=config,
@@ -487,9 +489,9 @@ class TaskFactoryWithSFTFulltrain(TaskFactory):
 
 
 # sft lora train factory
-class TaskFactoryWithSFTLoratrain(TaskFactory):
+class TaskFactoryWithDPOtrain(TaskFactory):
     def __init__(self, metrics=["metrics/accuracy"]):
-        self.TASK = "TaskFactory sft lora train"
+        self.TASK = "TaskFactory dpo train"
 
     def train(
         self,
@@ -497,27 +499,28 @@ class TaskFactoryWithSFTLoratrain(TaskFactory):
         data_args: DataArguments,
         training_args: TrainArguments,
         model: Optional[PreTrainedModel] = None,
+        ref_model: Optional[PreTrainedModel] = None,
         config: Optional[PretrainedConfig] = None,
         llm_tokenizer: Optional[PreTrainedTokenizer] = None,
         ds_train: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
         ds_eval: Optional[datasets.Dataset | datasets.DatasetDict | None] = None,
     ):
         # model factory
-        modelFactory = ModelFactoryWithSFTLoratrain(
+        modelFactory = ModelFactoryWithSFTtrain(
             model_args=model_args,
             model=model,
             config=config,
             llm_tokenizer=llm_tokenizer,
         )
-        model = modelFactory.handle()  # type: ignore
+        model = modelFactory.handle()
         if model is None:
             raise ValueError("No model found")
 
         # data factory
-        dataFactory = DataFactoryWithSFT(
+        dataFactory = DataFactoryWithDPO(
             data_args=data_args,
             training_args=training_args,
-            tokenizer=modelFactory.llm_tokenizer,
+            tokenizer=llm_tokenizer,
         )
         if ds_train is None and ds_eval is None:
             ds_train, ds_eval = dataFactory.get_dataset()
@@ -537,16 +540,25 @@ class TaskFactoryWithSFTLoratrain(TaskFactory):
             logger.info(ds_train[0])
             logger.info("\n <<<<<<<<<<<<< Data Check \n")
             summary(
-                model, depth=20, input_data=dataFactory.data_collator_fn([ds_train[0]])
+                model,
+                depth=20,
+                input_data={
+                    "input_ids": dataFactory.data_collator_fn([ds_train[0]])[
+                        "prompt_input_ids"
+                    ]
+                },
             )
+
         # data collator
         collator_fn = dataFactory.data_collator_fn
         # train
         training_args.ddp_find_unused_parameters = False  # !!! lora is need for ddp
-        trainer = TrainerFactoryWithPretrain(
+        trainer = TrainerFactoryWithDPO(
             model=model,
-            args=training_args,
+            ref_model=ref_model,
+            args=training_args,  # type: ignore
             train_dataset=ds_train,  # type: ignore
+            processing_class=llm_tokenizer,
             data_collator=collator_fn,
             callbacks=[
                 PrettyTablePrinterCallback,  # type: ignore
@@ -556,6 +568,7 @@ class TaskFactoryWithSFTLoratrain(TaskFactory):
                 ),
             ],
         )
+
         # Training
         if training_args.do_train:
             checkpoint = None

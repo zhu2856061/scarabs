@@ -60,6 +60,7 @@ from transformers.trainer import (
     version,
 )
 from transformers.trainer_callback import TrainerCallback
+from trl import DPOTrainer
 
 if is_apex_available():
     from apex import amp  # type: ignore
@@ -1510,6 +1511,69 @@ class TrainerFactory(Trainer):
 # LLM Pre training
 class TrainerFactoryWithPretrain(TrainerFactory):
     pass
+
+
+# LLM SFT training
+class TrainerFactoryWithSFT(TrainerFactory):
+    pass
+
+
+# LLM DPO
+class TrainerFactoryWithDPO(DPOTrainer, TrainerFactory):
+    def training_step(
+        self,
+        model: torch.nn.Module,
+        inputs: Dict[str, Union[torch.Tensor, Any]],
+        num_items_in_batch=None,
+    ):
+        model.train()
+
+        with self.compute_loss_context_manager():
+            loss, metrics = self.compute_loss(
+                model,
+                inputs,
+                return_outputs=True,  # type: ignore
+            )
+            # self.log(metrics)
+
+        del inputs
+
+        kwargs = {}
+
+        # For LOMO optimizers you need to explicitly use the learnign rate
+        if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+            kwargs["learning_rate"] = self._get_learning_rate()
+
+        if self.args.n_gpu > 1:
+            loss = loss.mean()  # type: ignore
+
+        if self.use_apex:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            self.accelerator.backward(loss, **kwargs)
+
+        return (loss, None, None)
+
+    def _prepare_dataset(self, dataset, processing_class, args, dataset_name):
+        # # Build the kwargs for the `map` function
+        # with PartialState().local_main_process_first():
+        #     dataset = dataset.map(
+        #         self.tokenize_row if not self.is_vision_model else self.process_row,
+        #         remove_columns=["prompt", "chosen", "rejected"],
+        #         fn_kwargs={
+        #             "processing_class": processing_class,
+        #             "max_prompt_length": args.max_prompt_length,
+        #             "max_completion_length": args.max_completion_length,
+        #             # for enc-dec, we add the special tokens ([bos_token] + prompt + [eos_token]; completion + [eos_token])
+        #             "add_special_tokens": False,
+        #         },
+        #         num_proc=args.dataset_num_proc,
+        #         desc=f"Tokenizing {dataset_name} dataset",
+        #         cache_file_name=f"{args.dataset_cache}/cache/{dataset_name}.tokenize_function",  # type: ignore
+        #     )
+
+        return dataset
 
 
 # Classification

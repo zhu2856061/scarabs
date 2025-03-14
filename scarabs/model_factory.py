@@ -4,33 +4,16 @@
 # @Moto   : Knowledge comes from decomposition
 from __future__ import absolute_import, division, print_function
 
+import dataclasses
 import os
-from typing import (  # noqa: F401
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Tuple,
-    Union,
-)
+from typing import List, Optional
 
+import peft
 import torch
 from loguru import logger
-from peft import (  # noqa: F401
-    AdaLoraConfig,
-    AdaptionPromptConfig,
-    IA3Config,
-    LoHaConfig,
-    LoKrConfig,
-    LoraConfig,
-    PrefixTuningConfig,
-    PromptEncoderConfig,
-    PromptTuningConfig,
-    PromptTuningInit,
-    TaskType,
-    get_peft_model,
+from peft import (
+    get_peft_model,  # type: ignore
+    prepare_model_for_kbit_training,  # type: ignore
 )
 from safetensors.torch import load_file
 from tqdm import tqdm
@@ -45,6 +28,7 @@ from transformers import (
     PreTrainedTokenizer,
 )
 from transformers.modeling_utils import _load_state_dict_into_model
+from trl.trainer.utils import peft_module_casting_to_bf16
 
 from scarabs.args_factory import ModelArguments
 from scarabs.mora.utils.tools import set_color
@@ -265,6 +249,130 @@ class ModelFactoryWithPretrain(ModelFactory):
         return model
 
 
+class ModelFactoryWithSFTtrain(ModelFactory):
+    def handle(self):
+        self._init_model()
+        if self.model is None:
+            raise ValueError("model is required.")
+        if self.model_args.model_name_or_path is not None:
+            self._weight_init(self.model, self.model_args.model_name_or_path)
+        else:
+            logger.info(
+                set_color(
+                    "model_name_or_path not be set, initialize from scratch", "red"
+                )
+            )
+        self.model = self._model_setup(self.model, self.model_args)
+        return self.model
+
+    def _weight_init(self, model: PreTrainedModel, model_name_or_path):
+        return self._load_state_dict(model, model_name_or_path)
+
+    def _model_setup(self, model: PreTrainedModel, conf: ModelArguments):
+        if conf.peft_config is None:
+            for _, param in model.named_parameters():
+                param.requires_grad = True
+            self._calulate_parameters(model)
+        else:
+            name = conf.peft_config.pop("name")
+            peft_config = getattr(peft, name)(**conf.peft_config)
+            if name == "LoraConfig":
+                self._set_lora_module_names(model, peft_config)
+
+            self._prepare_peft_model(model, peft_config, conf)
+        return model
+
+    def _prepare_peft_model(self, model, peft_config, args):
+        """Prepares a model for PEFT training."""
+        # Handle quantized models (QLoRA)
+        is_qlora = getattr(model, "is_loaded_in_4bit", False) or getattr(
+            model, "is_loaded_in_8bit", False
+        )
+
+        is_sharded_qlora = False
+        if getattr(model, "is_loaded_in_4bit", False):
+            # Check if model is sharded (FSDP/DS-Zero3)
+            for _, param in model.named_parameters():
+                if param.__class__.__name__ == "Params4bit":
+                    is_sharded_qlora = param.data.device.type in {"cpu", "meta"}
+                    break
+
+        # Prepare model for kbit training if needed
+        if is_qlora and not is_sharded_qlora:
+            model = self._prepare_model_for_kbit_training(model, args)
+            # Disable gradient checkpointing as it's handled by prepare_model_for_kbit_training
+            args = dataclasses.replace(args, model_gradient_checkpointing=False)
+        elif args.model_gradient_checkpointing:
+            model = self._enable_gradient_checkpointing(model, args)
+
+        # Create PEFT model
+        if getattr(model, "is_loaded_in_4bit", False) and is_sharded_qlora:
+            model = get_peft_model(model, peft_config, autocast_adapter_dtype=False)
+        else:
+            model = get_peft_model(model, peft_config)
+
+        # Handle bf16 casting for 4-bit models
+        if (
+            args.model_bf16
+            and getattr(model, "is_loaded_in_4bit", False)
+            and not is_sharded_qlora
+        ):
+            peft_module_casting_to_bf16(model)
+
+        return model
+
+    def _prepare_model_for_kbit_training(self, model: PreTrainedModel, args):
+        """Prepares a quantized model for kbit training."""
+        prepare_model_kwargs = {
+            "use_gradient_checkpointing": args.model_gradient_checkpointing,
+            "gradient_checkpointing_kwargs": args.model_gradient_checkpointing_kwargs
+            or {},
+        }
+
+        return prepare_model_for_kbit_training(model, **prepare_model_kwargs)
+
+    def _enable_gradient_checkpointing(self, model: PreTrainedModel, args):
+        """Enables gradient checkpointing for the model."""
+        model_gradient_checkpointing_kwargs = (
+            args.model_gradient_checkpointing_kwargs or {}
+        )
+        use_reentrant = (
+            "use_reentrant" not in model_gradient_checkpointing_kwargs
+            or model_gradient_checkpointing_kwargs["use_reentrant"]
+        )
+
+        if use_reentrant:
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
+            else:
+
+                def make_inputs_require_grad(module, input, output):
+                    output.requires_grad_(True)
+
+                model.get_input_embeddings().register_forward_hook(
+                    make_inputs_require_grad
+                )
+
+        return model
+
+    def _set_lora_module_names(self, model, peft_config):
+        if peft_config.target_modules is None:
+            # get k,q,v,o
+            lora_module_names = set()
+            for name, module in model.named_modules():
+                if (
+                    isinstance(module, torch.nn.Linear)
+                    and "mlp" not in name
+                    and "lm_head" not in name
+                ):
+                    lora_module_names.add(name.split(".")[-1])
+            peft_config.target_modules = list(lora_module_names)
+        logger.info(set_color("lora_module_names >>>>>>>>>>>>> \n", "green"))
+        for m in peft_config.target_modules:
+            logger.info(set_color(f"{m}", "green"))
+        logger.info(set_color("<<<<<<<<<<<<< lora_module_names \n", "green"))
+
+
 class ModelFactoryWithLLMClassification(ModelFactory):
     def handle(self):
         self._init_model()
@@ -306,132 +414,58 @@ class ModelFactoryWithTabular(ModelFactory):
         return model
 
 
-class ModelFactoryWithContinuePretrain(ModelFactory):
-    def handle(self):
-        self._init_model()
-        if self.model is None:
-            raise ValueError("model is required.")
+# class ModelFactoryWithSFTLoratrain(ModelFactory):
+#     def handle(self):
+#         self._init_model()
+#         if self.model is None:
+#             raise ValueError("model is required.")
 
-        self._weight_init(self.model, self.model_args.model_name_or_path)
-        self.model = self._model_setup(self.model)
-        return self.model
+#         self._weight_init(self.model, self.model_args.model_name_or_path)  # type: ignore
+#         self.model = self._model_setup(self.model, self.model_args)  # type: ignore
+#         return self.model
 
-    def _weight_init(self, model: PreTrainedModel, model_name_or_path):
-        return self._load_state_dict(model, model_name_or_path)
+#     def _weight_init(self, model: PreTrainedModel, model_name_or_path):
+#         return self._load_state_dict(model, model_name_or_path)
 
-    def _model_setup(self, llm_model: PreTrainedModel):
-        for _, param in llm_model.named_parameters():
-            param.requires_grad = True
-        self._calulate_parameters(llm_model)
-        return llm_model
+#     def _model_setup(self, model: PreTrainedModel, conf: ModelArguments):
+#         # For backward compatibility
+#         if hasattr(model, "enable_input_require_grads"):
+#             model.enable_input_require_grads()
+#         else:
 
+#             def make_inputs_require_grad(module, input, output):
+#                 output.requires_grad_(True)
 
-class ModelFactoryWithSFTFulltrain(ModelFactory):
-    def handle(self):
-        self._init_model()
-        if self.model is None:
-            raise ValueError("model is required.")
+#             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+#         if self.model_args.lora_target_modules is not None:
+#             lora_module_names = self.model_args.lora_target_modules
+#         else:
+#             # get k,q,v,o
+#             lora_module_names = set()
+#             for name, module in model.named_modules():
+#                 if (
+#                     isinstance(module, torch.nn.Linear)
+#                     and "mlp" not in name
+#                     and "lm_head" not in name
+#                 ):
+#                     lora_module_names.add(name.split(".")[-1])
+#         logger.info(set_color("\n lora_module_names >>>>>>>>>>>>> \n", "green"))
+#         for m in lora_module_names:
+#             logger.info(set_color(f"{m}", "green"))
+#         logger.info(set_color("\n <<<<<<<<<<<<< lora_module_names \n", "green"))
+#         # lora tuning setup
+#         peft_config = LoraConfig(
+#             task_type=conf.sft_task_type,
+#             inference_mode=False,
+#             r=conf.lora_r,
+#             target_modules=list(lora_module_names),
+#             lora_alpha=conf.lora_alpha,
+#             lora_dropout=conf.lora_dropout,
+#         )
+#         peft_llm_model = get_peft_model(model, peft_config)
 
-        self._weight_init(self.model, self.model_args.model_name_or_path)
-        self.model = self._model_setup(self.model)
-        return self.model
-
-    def _weight_init(self, model: PreTrainedModel, model_name_or_path):
-        return self._load_state_dict(model, model_name_or_path)
-
-    def _model_setup(self, model: PreTrainedModel):
-        for _, param in model.named_parameters():
-            param.requires_grad = True
-        self._calulate_parameters(model)
-        return model
-
-
-class ModelFactoryWithSFTLoratrain(ModelFactory):
-    def handle(self):
-        self._init_model()
-        if self.model is None:
-            raise ValueError("model is required.")
-
-        self._weight_init(self.model, self.model_args.model_name_or_path)  # type: ignore
-        self.model = self._model_setup(self.model, self.model_args)  # type: ignore
-        return self.model
-
-    def _weight_init(self, model: PreTrainedModel, model_name_or_path):
-        return self._load_state_dict(model, model_name_or_path)
-
-    def _model_setup(self, model: PreTrainedModel, conf: ModelArguments):
-        # For backward compatibility
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
-        else:
-
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-        if self.model_args.lora_target_modules is not None:
-            lora_module_names = self.model_args.lora_target_modules
-        else:
-            # get k,q,v,o
-            lora_module_names = set()
-            for name, module in model.named_modules():
-                if (
-                    isinstance(module, torch.nn.Linear)
-                    and "mlp" not in name
-                    and "lm_head" not in name
-                ):
-                    lora_module_names.add(name.split(".")[-1])
-        logger.info(set_color("\n lora_module_names >>>>>>>>>>>>> \n", "green"))
-        for m in lora_module_names:
-            logger.info(set_color(f"{m}", "green"))
-        logger.info(set_color("\n <<<<<<<<<<<<< lora_module_names \n", "green"))
-        # lora tuning setup
-        peft_config = LoraConfig(
-            task_type=conf.sft_task_type,
-            inference_mode=False,
-            r=conf.lora_r,
-            target_modules=list(lora_module_names),
-            lora_alpha=conf.lora_alpha,
-            lora_dropout=conf.lora_dropout,
-        )
-        peft_llm_model = get_peft_model(model, peft_config)
-
-        self._calulate_parameters(peft_llm_model)
-        logger.info(
-            f"memory footprint of model: {model.get_memory_footprint() / (1024 * 1024 * 1024)} GB"
-        )
-        return peft_llm_model
-
-
-class ModelFactoryWithSFTPrompttrain(ModelFactory):
-    def _weight_init(self, llm_model: PreTrainedModel, model_name_or_path: str):
-        return self._load_state_dict(llm_model, model_name_or_path)
-
-    def _model_setup(self, llm_model: PreTrainedModel, conf: ModelArguments):
-        # prompt tuning setup
-        # PromptTuningInit.RANDOM Randomly initialize the prefix vector /
-        # PromptTuningInit.TEXT Based on the given prefix - prompt_tuning_init_text, initialize using this prefix
-        peft_config = PromptTuningConfig(
-            task_type=conf.sft_task_type,
-            num_virtual_tokens=conf.num_virtual_tokens,
-            prompt_tuning_init=conf.prompt_tuning_init,
-            prompt_tuning_init_text=conf.prompt_tuning_init_text,
-            tokenizer_name_or_path=conf.model_name_or_path,
-        )
-        peft_llm_model = get_peft_model(llm_model, peft_config)
-        self._calulate_parameters(peft_llm_model)
-        return peft_llm_model
-
-
-class ModelFactoryWithSFTPtuningtrain(ModelFactory):
-    def _weight_init(self, llm_model: PreTrainedModel, model_name_or_path: str):
-        return self._load_state_dict(llm_model, model_name_or_path)
-
-    def _model_setup(self, llm_model: PreTrainedModel, conf: ModelArguments):
-        peft_config = PromptEncoderConfig(
-            task_type=conf.sft_task_type,
-            num_virtual_tokens=conf.num_virtual_tokens,
-        )
-        peft_llm_model = get_peft_model(llm_model, peft_config)
-        self._calulate_parameters(peft_llm_model)
-        return peft_llm_model
+#         self._calulate_parameters(peft_llm_model)
+#         logger.info(
+#             f"memory footprint of model: {model.get_memory_footprint() / (1024 * 1024 * 1024)} GB"
+#         )
+#         return peft_llm_model

@@ -19,6 +19,7 @@ from typing import (  # noqa: F401
 )
 
 import torch
+from accelerate import PartialState
 from datasets import (
     Dataset,
     DatasetDict,
@@ -33,6 +34,7 @@ from transformers import (
     PreTrainedTokenizerFast,
     TrainingArguments,
 )
+from trl.trainer.utils import pad
 
 from scarabs.args_factory import DataArguments
 from scarabs.mora.utils.feature_utils import Feature2Transformer
@@ -228,7 +230,7 @@ class DataFactoryWithPretrain(DataFactory):
         return self.tokenizer(examples["text"])
 
     def _process(self, dataset: Dataset, template: Optional[str] = None, dtype=None):
-        with self.training_args.main_process_first(desc="dataset map tokenization"):
+        with PartialState().local_main_process_first():
             tokenized_datasets = dataset.map(
                 lambda _: self._tokenize_function(_, template),
                 batched=True,
@@ -271,7 +273,7 @@ class DataFactoryWithPretrain(DataFactory):
             #
             # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
             # https://huggingface.co/docs/datasets/process#map
-            with self.training_args.main_process_first(desc="grouping texts together"):
+            with PartialState().local_main_process_first():
                 tokenized_datasets = tokenized_datasets.map(
                     group_texts,
                     batched=True,
@@ -307,81 +309,6 @@ class DataFactoryWithPretrain(DataFactory):
             input_ids_batch.append(input_ids)
             attention_mask_batch.append(attention_mask)
             labels_batch.append(input_ids)
-
-        # to tensor
-        input_ids_batch = torch.tensor(input_ids_batch, dtype=torch.long)
-        attention_mask_batch = torch.tensor(attention_mask_batch, dtype=torch.long)
-        labels_batch = torch.tensor(labels_batch, dtype=torch.long)
-
-        inputs = {
-            "input_ids": input_ids_batch,
-            "attention_mask": attention_mask_batch,
-            "labels": labels_batch,
-        }
-
-        return inputs
-
-
-class DataFactoryWithLLMClassification(DataFactory):
-    """your data ,data name is suffix .jsonl or .json
-
-    {"text": "your text", "label": "class"}
-    {"text": "your text", "label": "class"}
-
-    """
-
-    def _tokenize_function(self, examples, template):
-        # Remove empty lines
-        examples["text"] = [
-            line for line in examples["text"] if len(line) > 0 and not line.isspace()
-        ]
-        if template is not None:
-            examples["text"] = [template.format(line) for line in examples["text"]]
-        if self.tokenizer is None:
-            raise ValueError("tokenizer is initialized")
-
-        out = self.tokenizer(examples["text"])
-        out["labels"] = examples["label"]
-        return out
-
-    def _process(self, dataset: Dataset, template: Optional[str] = None, dtype=None):
-        with self.training_args.main_process_first(desc="dataset map tokenization"):
-            tokenized_datasets = dataset.map(
-                lambda _: self._tokenize_function(_, template),
-                batched=True,
-                num_proc=self.data_args.preprocessing_num_workers,
-                remove_columns=["text"],
-                load_from_cache_file=not self.data_args.overwrite_cache,
-                desc="Running tokenizer on dataset",
-                cache_file_name=f"{self.dataset_cache}/cache/{dtype}.tokenize_function",
-            )
-        return tokenized_datasets
-
-    def data_collator_fn(self, batch_examples):
-        lengths = max(
-            [len(x["input_ids"]) for x in batch_examples if x["input_ids"] is not None]
-        )
-        batch_max_len = min(lengths, self.max_seq_length)
-
-        input_ids_batch, attention_mask_batch, labels_batch = [], [], []
-        for example in batch_examples:
-            input_ids = example["input_ids"]
-            attention_mask = example["attention_mask"]
-            labels = example["labels"]
-
-            # truncate
-            input_ids = input_ids[:batch_max_len]
-            attention_mask = attention_mask[:batch_max_len]
-
-            # padding
-            input_ids_real_len = len(input_ids)
-            padding_len = batch_max_len - input_ids_real_len
-            input_ids = input_ids + [self.pad_id] * padding_len
-            attention_mask = attention_mask + [0] * padding_len
-
-            input_ids_batch.append(input_ids)
-            attention_mask_batch.append(attention_mask)
-            labels_batch.append(labels)
 
         # to tensor
         input_ids_batch = torch.tensor(input_ids_batch, dtype=torch.long)
@@ -443,6 +370,7 @@ class DataFactoryWithSFT(DataFactory):
         if self.tokenizer is None:
             raise ValueError("tokenizer is initialized")
         text = self.tokenizer(text)
+        text.pop("attention_mask")
         label = self.tokenizer(assistant_txt)
 
         text["labels"] = [self.IGNORE_INDEX] * (
@@ -452,15 +380,237 @@ class DataFactoryWithSFT(DataFactory):
         return text
 
     def _process(self, dataset: Dataset, template: Optional[str] = None, dtype=None):
-        tokenized_datasets = dataset.map(
-            lambda _: self._tokenize_function(_, template),
-            batched=False,
-            num_proc=self.data_args.preprocessing_num_workers,
-            load_from_cache_file=not self.data_args.overwrite_cache,
-            desc="Running tokenizer on dataset",
-            cache_file_name=f"{self.dataset_cache}/cache/{dtype}.tokenize_function",
-        )
+        with PartialState().local_main_process_first():
+            tokenized_datasets = dataset.map(
+                lambda _: self._tokenize_function(_, template),
+                batched=False,
+                remove_columns=["user", "assistant"],
+                num_proc=self.data_args.preprocessing_num_workers,
+                load_from_cache_file=not self.data_args.overwrite_cache,
+                desc="Running tokenizer on dataset",
+                cache_file_name=f"{self.dataset_cache}/cache/{dtype}.tokenize_function",
+            )
 
+        return tokenized_datasets
+
+    def data_collator_fn(self, batch_examples):
+        lengths = max(
+            [len(x["input_ids"]) for x in batch_examples if x["input_ids"] is not None]
+        )
+        batch_max_len = min(lengths, self.max_seq_length)
+
+        input_ids_batch, attention_mask_batch, labels_batch = [], [], []
+        for example in batch_examples:
+            input_ids = example["input_ids"]
+            attention_mask = [1] * len(example["input_ids"])
+            labels = example["labels"]
+
+            # truncate
+            input_ids = input_ids[-batch_max_len:]
+            attention_mask = attention_mask[-batch_max_len:]
+            labels = labels[-batch_max_len:]
+
+            # padding
+            input_ids_real_len = len(input_ids)
+            padding_len = batch_max_len - input_ids_real_len
+            input_ids = [self.pad_id] * padding_len + input_ids
+            attention_mask = [0] * padding_len + attention_mask
+            labels = [self.IGNORE_INDEX] * padding_len + labels
+
+            input_ids_batch.append(input_ids)
+            attention_mask_batch.append(attention_mask)
+            labels_batch.append(labels)
+
+        # to tensor
+        input_ids_batch = torch.tensor(input_ids_batch, dtype=torch.long)
+        attention_mask_batch = torch.tensor(attention_mask_batch, dtype=torch.long)
+        labels_batch = torch.tensor(labels_batch, dtype=torch.long)
+
+        inputs = {
+            "input_ids": input_ids_batch,
+            "attention_mask": attention_mask_batch,
+            "labels": labels_batch,
+        }
+
+        return inputs
+
+
+class DataFactoryWithDPO(DataFactory):
+    """your data ,data name is suffix .jsonl or .json
+    {"system": "", "user": "The sky is", "chosen": " blue", "rejected": " green"}
+    {"system": "", "user": "The sky is", "chosen": " blue", "rejected": " green"}
+    """
+
+    def _tokenize_function(self, examples, template):
+        system_txt = ""
+        if "system" in examples:
+            system_txt = examples["system"]
+
+        user_txt = examples["user"]
+        chosen_txt = examples["chosen"]
+        rejected_txt = examples["rejected"]
+
+        # generate new text
+        assert template is not None
+        assert template_dict.get(template) is not None
+
+        if system_txt != "":
+            system_txt = template_dict[template].system_format.format(
+                content=system_txt
+            )
+        if user_txt != "":
+            user_txt = template_dict[template].user_format.format(content=user_txt)
+        if chosen_txt != "":
+            chosen_txt = template_dict[template].assistant_format.format(
+                content=chosen_txt
+            )
+        if rejected_txt != "":
+            rejected_txt = template_dict[template].assistant_format.format(
+                content=rejected_txt
+            )
+
+        prompt_text = ""
+        if system_txt != "":
+            prompt_text += system_txt
+        if user_txt != "":
+            prompt_text += user_txt
+
+        if self.tokenizer is None:
+            raise ValueError("tokenizer is initialized")
+        prompt_text = self.tokenizer(prompt_text)["input_ids"]
+        rejected_txt = self.tokenizer(rejected_txt)["input_ids"]
+        chosen_txt = self.tokenizer(chosen_txt)["input_ids"]
+
+        return {
+            "prompt_input_ids": prompt_text,
+            "chosen_input_ids": chosen_txt,
+            "rejected_input_ids": rejected_txt,
+        }
+
+    def _process(self, dataset: Dataset, template: Optional[str] = None, dtype=None):
+        with PartialState().local_main_process_first():
+            tokenized_datasets = dataset.map(
+                lambda _: self._tokenize_function(_, template),
+                batched=False,
+                remove_columns=["user", "chosen", "rejected"],
+                num_proc=self.data_args.preprocessing_num_workers,
+                load_from_cache_file=not self.data_args.overwrite_cache,
+                desc="Running tokenizer on dataset",
+                cache_file_name=f"{self.dataset_cache}/cache/{dtype}.tokenize_function",
+            )
+
+        return tokenized_datasets
+
+    def data_collator_fn(self, batch_examples):
+        # Convert to tensor
+        prompt_input_ids = [
+            torch.tensor(example["prompt_input_ids"]) for example in batch_examples
+        ]
+        prompt_attention_mask = [
+            torch.ones_like(input_ids) for input_ids in prompt_input_ids
+        ]
+        chosen_input_ids = [
+            torch.tensor(example["chosen_input_ids"]) for example in batch_examples
+        ]
+        chosen_attention_mask = [
+            torch.ones_like(input_ids) for input_ids in chosen_input_ids
+        ]
+        rejected_input_ids = [
+            torch.tensor(example["rejected_input_ids"]) for example in batch_examples
+        ]
+        rejected_attention_mask = [
+            torch.ones_like(input_ids) for input_ids in rejected_input_ids
+        ]
+        if "pixel_values" in batch_examples[0]:
+            pixel_values = [
+                torch.tensor(example["pixel_values"]) for example in batch_examples
+            ]
+        if "pixel_attention_mask" in batch_examples[0]:
+            pixel_attention_mask = [
+                torch.tensor(example["pixel_attention_mask"])
+                for example in batch_examples
+            ]
+        if (
+            "ref_chosen_logps" in batch_examples[0]
+            and "ref_rejected_logps" in batch_examples[0]
+        ):
+            ref_chosen_logps = torch.tensor(
+                [example["ref_chosen_logps"] for example in batch_examples]
+            )
+            ref_rejected_logps = torch.tensor(
+                [example["ref_rejected_logps"] for example in batch_examples]
+            )
+
+        # Pad
+        output = {}
+        output["prompt_input_ids"] = pad(
+            prompt_input_ids,
+            padding_value=self.pad_id,  # type: ignore
+            padding_side="left",
+        )
+        output["prompt_attention_mask"] = pad(
+            prompt_attention_mask, padding_value=0, padding_side="left"
+        )
+        output["chosen_input_ids"] = pad(chosen_input_ids, padding_value=self.pad_id)  # type: ignore
+        output["chosen_attention_mask"] = pad(chosen_attention_mask, padding_value=0)
+        output["rejected_input_ids"] = pad(
+            rejected_input_ids,
+            padding_value=self.pad_id,  # type: ignore
+        )
+        output["rejected_attention_mask"] = pad(
+            rejected_attention_mask, padding_value=0
+        )
+        if "pixel_values" in batch_examples[0]:
+            output["pixel_values"] = pad(pixel_values, padding_value=0)
+        if "pixel_attention_mask" in batch_examples[0]:
+            output["pixel_attention_mask"] = pad(pixel_attention_mask, padding_value=0)
+        if "image_sizes" in batch_examples[0]:
+            output["image_sizes"] = torch.tensor(
+                [example["image_sizes"] for example in batch_examples]
+            )
+        if (
+            "ref_chosen_logps" in batch_examples[0]
+            and "ref_rejected_logps" in batch_examples[0]
+        ):
+            output["ref_chosen_logps"] = ref_chosen_logps
+            output["ref_rejected_logps"] = ref_rejected_logps
+
+        return output
+
+
+class DataFactoryWithLLMClassification(DataFactory):
+    """your data ,data name is suffix .jsonl or .json
+
+    {"text": "your text", "label": "class"}
+    {"text": "your text", "label": "class"}
+
+    """
+
+    def _tokenize_function(self, examples, template):
+        # Remove empty lines
+        examples["text"] = [
+            line for line in examples["text"] if len(line) > 0 and not line.isspace()
+        ]
+        if template is not None:
+            examples["text"] = [template.format(line) for line in examples["text"]]
+        if self.tokenizer is None:
+            raise ValueError("tokenizer is initialized")
+
+        out = self.tokenizer(examples["text"])
+        out["labels"] = examples["label"]
+        return out
+
+    def _process(self, dataset: Dataset, template: Optional[str] = None, dtype=None):
+        with PartialState().local_main_process_first():
+            tokenized_datasets = dataset.map(
+                lambda _: self._tokenize_function(_, template),
+                batched=True,
+                num_proc=self.data_args.preprocessing_num_workers,
+                remove_columns=["text"],
+                load_from_cache_file=not self.data_args.overwrite_cache,
+                desc="Running tokenizer on dataset",
+                cache_file_name=f"{self.dataset_cache}/cache/{dtype}.tokenize_function",
+            )
         return tokenized_datasets
 
     def data_collator_fn(self, batch_examples):
@@ -476,16 +626,14 @@ class DataFactoryWithSFT(DataFactory):
             labels = example["labels"]
 
             # truncate
-            input_ids = input_ids[-batch_max_len:]
-            attention_mask = attention_mask[-batch_max_len:]
-            labels = labels[-batch_max_len:]
+            input_ids = input_ids[:batch_max_len]
+            attention_mask = attention_mask[:batch_max_len]
 
             # padding
             input_ids_real_len = len(input_ids)
             padding_len = batch_max_len - input_ids_real_len
-            input_ids = [self.pad_id] * padding_len + input_ids
-            attention_mask = [0] * padding_len + attention_mask
-            labels = [self.IGNORE_INDEX] * padding_len + labels
+            input_ids = input_ids + [self.pad_id] * padding_len
+            attention_mask = attention_mask + [0] * padding_len
 
             input_ids_batch.append(input_ids)
             attention_mask_batch.append(attention_mask)
@@ -535,15 +683,15 @@ class DataFactoryWithTabular(DataFactory):
             [col for col in dataset.column_names if col not in valid_columns]
         )
         logger.info(f"dataset basic info: \n {dataset}")
-
-        dataset.map(
-            self.FT.build_meta_batch,
-            batched=True,
-            batch_size=10000,
-            # num_proc=self.data_args.preprocessing_num_workers,
-            desc="Running FT build_meta_batch on dataset",
-            cache_file_name=f"{self.dataset_cache}/cache/meta.build_meta_batch",
-        )
+        with PartialState().local_main_process_first():
+            dataset.map(
+                self.FT.build_meta_batch,
+                batched=True,
+                batch_size=10000,
+                # num_proc=self.data_args.preprocessing_num_workers,
+                desc="Running FT build_meta_batch on dataset",
+                cache_file_name=f"{self.dataset_cache}/cache/meta.build_meta_batch",
+            )
         for item in self.FT.feature2meta.items():
             tmp = f"【{item[0]}】 vocab size: {len(item[1].vocab)}"
             logger.info(set_color(tmp, "green"))
@@ -577,13 +725,14 @@ class DataFactoryWithTabular(DataFactory):
             [col for col in dataset.column_names if col not in valid_columns]
         )
         logger.info(set_color(f"dataset basic info: \n {dataset}", "yellow"))
-        dataset = dataset.map(
-            self.FT.handle,
-            batched=False,
-            num_proc=self.data_args.preprocessing_num_workers,
-            desc="Running FT handle on dataset",
-            cache_file_name=f"{self.dataset_cache}/cache/{dtype}.FT_handle",
-        )
+        with PartialState().local_main_process_first():
+            dataset = dataset.map(
+                self.FT.handle,
+                batched=False,
+                num_proc=self.data_args.preprocessing_num_workers,
+                desc="Running FT handle on dataset",
+                cache_file_name=f"{self.dataset_cache}/cache/{dtype}.FT_handle",
+            )
         logger.info(set_color(f"after handle example: \n {dataset[0]}", "yellow"))
         return dataset
 

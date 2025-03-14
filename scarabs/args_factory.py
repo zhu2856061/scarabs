@@ -3,9 +3,10 @@
 # @Author : zip
 # @Moto   : Knowledge comes from decomposition
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from transformers import TrainingArguments
+from trl.trainer import DPOConfig
 
 
 def flatten_dict(nested: Dict, sep: str = "/") -> Dict:
@@ -114,30 +115,10 @@ class ModelArguments:
             "help": ("Enum class for the different types of tasks supported by PEFT.")
         },
     )
-    lora_r: int = field(
-        default=4,
-        metadata={"help": ("r (`int`): Lora attention dimension.")},
-    )
-    lora_alpha: int = field(
-        default=64,
-        metadata={"help": ("alpha (`int`): Lora alpha.")},
-    )
-    lora_dropout: float = field(
-        default=0.0,
-        metadata={"help": ("dropout (`float`): Lora dropout.")},
-    )
-    lora_target_modules: Optional[List[str]] = field(
+    peft_config: Optional[Dict] = field(
         default=None,
-        metadata={"help": ("LoRA target modules.")},
-    )
-    lora_modules_to_save: Optional[List[str]] = field(
-        default=None,
-        metadata={"help": ("Model layers to unfreeze & train")},
-    )
-    lora_task_type: str = field(
-        default="CAUSAL_LM",
         metadata={
-            "help": "The task_type to pass for LoRA (use SEQ_CLS for reward modeling)"
+            "help": ("PEFT config for the different types of tasks supported by PEFT.")
         },
     )
     num_virtual_tokens: int = field(
@@ -156,21 +137,20 @@ class ModelArguments:
             "help": "use 4 bit precision for the base model - works only with LoRA"
         },
     )
-    prompt_tuning_init: str = field(
-        default="TEXT",
+    model_gradient_checkpointing: bool = field(
+        default=False,
         metadata={
-            "help": (
-                "prompt_tuning_init (`str`): Initialization method for prompt tuning. "
-                "Can be `TEXT` or `RANDOM`."
-            )
+            "help": "use gradient checkpointing to save memory at the expense of slower backward pass"
         },
     )
-    prompt_tuning_init_text: Optional[str] = field(
-        default="",
+    model_gradient_checkpointing_kwargs: Dict = field(
+        default_factory=dict,
+        metadata={"help": "kwargs for gradient checkpointing"},
+    )
+    model_bf16: bool = field(
+        default=False,
         metadata={
-            "help": (
-                "prompt_tuning_init_text (`str`): Initialization text for prompt tuning."
-            )
+            "help": "use bfloat16 precision for the base model - works only with LoRA"
         },
     )
 
@@ -183,12 +163,6 @@ class ModelArguments:
     def __post_init__(self):
         if self.load_in_8bit and self.load_in_4bit:
             raise ValueError("You can't use 8 bit and 4 bit precision at the same time")
-
-        if (
-            isinstance(self.lora_target_modules, list)
-            and len(self.lora_target_modules) == 1
-        ):
-            self.lora_target_modules = self.lora_target_modules[0]  # type: ignore
 
         if self.tokenizer_name is None and self.model_name_or_path is not None:
             self.tokenizer_name = self.model_name_or_path
@@ -344,3 +318,8 @@ class TrainArguments(TrainingArguments):
         default=100,
         metadata={"help": "top_k candidate_num for retrieval evaluation, default 100"},
     )
+
+
+@dataclass
+class DPOTrainArguments(TrainArguments, DPOConfig):
+    pass
