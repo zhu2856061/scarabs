@@ -31,7 +31,7 @@ class ClassificationWithDNNConfig(PretrainedConfig):
         regularizer=5e-06,
         batch_norm=False,
         dropout_rates=0.0,
-        label_name="label",
+        label_names=["label"],
         num_labels=2,
         **kwargs,
     ):
@@ -43,7 +43,7 @@ class ClassificationWithDNNConfig(PretrainedConfig):
         self.regularizer = regularizer
         self.batch_norm = batch_norm
         self.dropout_rates = dropout_rates
-        self.label_name = label_name
+        self.label_names = label_names
         self.num_labels = num_labels
 
 
@@ -180,7 +180,7 @@ class ClassificationWithDNN(PreTrainedModel):
         super().__init__(config)
         #
         self.regularizer = config.regularizer
-        self.label_name = config.label_name
+        self.label_names = config.label_names
         self.num_labels = config.num_labels
 
         #  define embedding layer
@@ -233,8 +233,8 @@ class ClassificationWithDNN(PreTrainedModel):
         logits = logits.contiguous().view(-1, self.num_labels)
 
         labels = None
-        if self.label_name in kwargs:
-            labels = kwargs[self.label_name]
+        if self.label_names[0] in kwargs:
+            labels = kwargs[self.label_names[0]]
 
         if labels is None:
             return ClassificationModelOutput(logits=logits)

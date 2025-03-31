@@ -31,7 +31,7 @@ class CtrWithDNNConfig(PretrainedConfig):
         regularizer=5e-06,
         batch_norm=False,
         dropout_rates=0.0,
-        label_name="label",
+        label_names=["label"],
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -42,7 +42,7 @@ class CtrWithDNNConfig(PretrainedConfig):
         self.regularizer = regularizer
         self.batch_norm = batch_norm
         self.dropout_rates = dropout_rates
-        self.label_name = label_name
+        self.label_names = label_names
 
 
 class EmbeddingUnitLayer(torch.nn.Module):
@@ -178,7 +178,7 @@ class CtrWithDNN(PreTrainedModel):
         super().__init__(config)
         #
         self.regularizer = config.regularizer
-        self.label_name = config.label_name
+        self.label_names = config.label_names
 
         #  define embedding layer
         self.embedding_layer = EmbeddingLayer(config.features, config.embedding_size)
@@ -237,8 +237,8 @@ class CtrWithDNN(PreTrainedModel):
         logits = torch.sigmoid(logits)
 
         labels = None
-        if self.label_name in kwargs:
-            labels = kwargs[self.label_name]
+        if self.label_names[0] in kwargs:
+            labels = kwargs[self.label_names[0]]
 
         if labels is None:
             return CtrModelOutput(logits=logits)

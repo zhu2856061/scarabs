@@ -60,7 +60,7 @@ from transformers.trainer import (
     version,
 )
 from transformers.trainer_callback import TrainerCallback
-from trl import DPOTrainer
+from trl import DPOTrainer, GRPOTrainer, PPOTrainer
 
 if is_apex_available():
     from apex import amp  # type: ignore
@@ -1070,43 +1070,6 @@ class TrainerFactory(Trainer):
 
         return is_new_best_metric
 
-    # def _determine_best_metric(self, metrics, trial):
-    #     """
-    #     Determine if the model should be saved based on the evaluation metrics.
-    #     If args.metric_for_best_model is not set, the loss is used.
-
-    #     Returns:
-    #         bool: True if a new best metric was found, else False
-    #     """
-    #     is_new_best_metric = False
-
-    #     if self.args.metric_for_best_model is not None:
-    #         metric_to_check = self.args.metric_for_best_model
-
-    #         if metric_to_check in metrics:
-    #             metric_value = metrics[metric_to_check]
-    #         else:
-    #             return is_new_best_metric
-
-    #         operator = np.greater if self.args.greater_is_better else np.less
-
-    #         if self.state.best_metric is None:
-    #             self.state.best_metric = (
-    #                 float("-inf") if self.args.greater_is_better else float("inf")
-    #             )
-
-    #         if operator(metric_value, self.state.best_metric):
-    #             run_dir = self._get_output_dir(trial=trial)
-    #             checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
-    #             output_dir = os.path.join(run_dir, checkpoint_folder)
-
-    #             self.state.best_metric = metric_value
-    #             self.state.best_model_checkpoint = output_dir
-
-    #             is_new_best_metric = True
-
-    #     return is_new_best_metric
-
     def evaluation_loop(
         self,
         dataloader: DataLoader,
@@ -1395,6 +1358,7 @@ class TrainerFactory(Trainer):
                 return_outputs=self.args.train_return_outputs,  # type: ignore
                 num_items_in_batch=num_items_in_batch,
             )
+
             if isinstance(out, tuple):
                 loss, logits = out
             else:
@@ -1507,6 +1471,38 @@ class TrainerFactory(Trainer):
 
         return (loss, logits, labels)
 
+    def compute_loss(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
+        """
+        How the loss is computed by Trainer. By default, all models return the loss in the first element.
+
+        Subclass and override for custom behavior.
+        """
+        if self.model_accepts_loss_kwargs:
+            loss_kwargs = {}
+            if num_items_in_batch is not None:
+                loss_kwargs["num_items_in_batch"] = num_items_in_batch
+            inputs = {**inputs, **loss_kwargs}
+        outputs = model(**inputs)
+        # Save past state if it exists
+        # TODO: this needs to be fixed and made cleaner later.
+        if self.args.past_index >= 0:
+            self._past = outputs[self.args.past_index]
+
+        if isinstance(outputs, dict) and "loss" not in outputs:
+            raise ValueError(
+                "The model did not return a loss from the inputs, only the following keys: "
+                f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
+            )
+        # We don't use .loss here since the model may return tuples instead of ModelOutput.
+        loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+
+        if self.args.average_tokens_across_devices and self.model_accepts_loss_kwargs:
+            loss *= self.accelerator.num_processes
+
+        return (loss, outputs) if return_outputs else loss
+
 
 # LLM Pre training
 class TrainerFactoryWithPretrain(TrainerFactory):
@@ -1520,12 +1516,7 @@ class TrainerFactoryWithSFT(TrainerFactory):
 
 # LLM DPO
 class TrainerFactoryWithDPO(DPOTrainer, TrainerFactory):
-    def training_step(
-        self,
-        model: torch.nn.Module,
-        inputs: Dict[str, Union[torch.Tensor, Any]],
-        num_items_in_batch=None,
-    ):
+    def training_step(self, model, inputs, num_items_in_batch=None):
         model.train()
 
         with self.compute_loss_context_manager():
@@ -1573,6 +1564,75 @@ class TrainerFactoryWithDPO(DPOTrainer, TrainerFactory):
         #         cache_file_name=f"{args.dataset_cache}/cache/{dataset_name}.tokenize_function",  # type: ignore
         #     )
 
+        return dataset
+
+
+# LLM GRPO
+class TrainerFactoryWithGRPO(GRPOTrainer):
+    pass
+
+
+# LLM PPO
+class TrainerFactoryWithPPO(PPOTrainer):
+    pass
+
+
+# LLM Distill
+class TrainerFactoryWithDistill(DPOTrainer, TrainerFactory):
+    def compute_loss(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
+        labels = inputs["labels"]
+        mask = labels == -100
+        loss_mask_flat = torch.ones_like(labels)  # type: ignore
+        loss_mask_flat[mask] = 0
+        loss_mask_flat = loss_mask_flat.view(-1).to(labels.device)  # type: ignore
+
+        if self.model_accepts_loss_kwargs:
+            loss_kwargs = {}
+            if num_items_in_batch is not None:
+                loss_kwargs["num_items_in_batch"] = num_items_in_batch
+            inputs = {**inputs, **loss_kwargs}
+
+        outputs = model(**inputs)
+        if self.args.past_index >= 0:
+            self._past = outputs[self.args.past_index]
+
+        assert isinstance(outputs, dict)
+        ce_loss = outputs["loss"]
+        student_logits = outputs["logits"]
+        if self.args.average_tokens_across_devices and self.model_accepts_loss_kwargs:
+            ce_loss *= self.accelerator.num_processes
+
+        # teacher
+        with torch.no_grad():
+            teacher_logits = self.ref_model(**inputs)["logits"]  # type: ignore
+            vocab_size_student = student_logits.size(-1)  # N
+            teacher_logits = teacher_logits[..., :vocab_size_student]
+
+        distill_loss = self.distillation_loss_fn(
+            student_logits.view(-1, student_logits.size(-1))[loss_mask_flat == 1],
+            teacher_logits.view(-1, teacher_logits.size(-1))[loss_mask_flat == 1],
+            temperature=self.args.distill_temperature,  # type: ignore
+        )
+        loss = (
+            self.args.distill_alpha * ce_loss  # type: ignore
+            + (1 - self.args.distill_alpha) * distill_loss  # type: ignore
+        )
+        return (loss, outputs) if return_outputs else loss
+
+    def distillation_loss_fn(
+        self, student_logits, teacher_logits, temperature=1.0, reduction=1
+    ):
+        with torch.no_grad():
+            teacher_probs = torch.softmax(teacher_logits / temperature, dim=-1).detach()
+
+        student_log_probs = torch.log_softmax(student_logits / temperature, dim=-1)
+
+        kl = torch.kl_div(student_log_probs, teacher_probs, reduction=reduction)  # type: ignore
+        return (temperature**2) * kl
+
+    def _prepare_dataset(self, dataset, processing_class, args, dataset_name):
         return dataset
 
 

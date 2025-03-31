@@ -27,6 +27,24 @@ def flatten_dict(nested: Dict, sep: str = "/") -> Dict:
 
 
 @dataclass
+class TaskArguments:
+    """
+    Arguments Task.
+    """
+
+    task_name_or_path: str = field(
+        default="encode",
+        metadata={"help": ("The task_name_or_path")},
+    )
+
+    def to_dict(self):
+        output_dict = {}
+        for key, value in self.__dict__.items():
+            output_dict[key] = value
+        return flatten_dict(output_dict)
+
+
+@dataclass
 class ModelArguments:
     """
     Arguments pertaining to which model/config/tokenizer we are going to fine-tune, or train from scratch.
@@ -175,7 +193,7 @@ class DataArguments:
     """
 
     dataset_cache: str = field(
-        default="./encode",
+        default="data",
         metadata={
             "help": "The configuration name of the dataset to use (via the datasets library)."
         },
@@ -317,6 +335,14 @@ class TrainArguments(TrainingArguments):
     top_K_candidate_num: int = field(
         default=100,
         metadata={"help": "top_k candidate_num for retrieval evaluation, default 100"},
+    )
+    distill_temperature: float = field(
+        default=1.0,
+        metadata={"help": "temperature for distillation, default 1.0"},
+    )
+    distill_alpha: float = field(
+        default=0.1,
+        metadata={"help": "alpha for distillation, default 0.0"},
     )
 
 

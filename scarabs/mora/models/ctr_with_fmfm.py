@@ -6,11 +6,9 @@
 from __future__ import absolute_import, division, print_function
 
 from dataclasses import dataclass
-from itertools import combinations
 from typing import Optional
 
 import torch
-from sympy import false
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.utils import ModelOutput
 
@@ -27,7 +25,7 @@ class CtrWithFMFMConfig(PretrainedConfig):
     def __init__(
         self,
         features=None,
-        label_name="label",
+        label_names=["label"],
         hidden_dim=8,
         regularizer=5e-06,
         field_interaction_type="matrixed",
@@ -35,7 +33,7 @@ class CtrWithFMFMConfig(PretrainedConfig):
     ):
         super().__init__(**kwargs)
         self.features = features
-        self.label_name = label_name
+        self.label_names = label_names
         self.hidden_dim = hidden_dim
         self.regularizer = regularizer
         self.field_interaction_type = field_interaction_type
@@ -141,7 +139,7 @@ class CtrWithFMFM(PreTrainedModel):
 
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
-        self.label_name = config.label_name
+        self.label_names = config.label_names
         self.regularizer = config.regularizer
         self.field_interaction_type = config.field_interaction_type
 
@@ -204,8 +202,8 @@ class CtrWithFMFM(PreTrainedModel):
         logits = torch.sigmoid(logits)
 
         labels = None
-        if self.label_name in kwargs:
-            labels = kwargs[self.label_name]
+        if self.label_names[0] in kwargs:
+            labels = kwargs[self.label_names[0]]
 
         if labels is None:
             return CtrModelOutput(logits=logits)

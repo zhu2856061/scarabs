@@ -1,4 +1,7 @@
 {
+    "label_names": [
+        "label"
+    ],
     "embedding_size": 10,
     "feature_hidden_size": [
         10
@@ -9,25 +12,24 @@
     "regularizer": 5e-06,
     "batch_norm": false,
     "dropout_rates": 0.0,
-    "label_name": "label",
-    "features": [
-        {
+    "features": {
+        "user_id": {
             "target": "Hash2Feature",
             "name": "user_id",
             "length": 1,
             "default": ""
         },
-        {
+        "item_id": {
             "target": "Hash2Feature",
             "name": "item_id",
             "length": 1,
             "default": ""
         },
-        {
+        "tag_id": {
             "target": "Hash2Feature",
             "name": "tag_id",
             "length": 1,
             "default": ""
         }
-    ]
+    }
 }

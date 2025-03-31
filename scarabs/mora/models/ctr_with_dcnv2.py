@@ -25,7 +25,7 @@ class CtrWithDCNV2Config(PretrainedConfig):
     def __init__(
         self,
         features=None,
-        label_name="label",
+        label_names=["label"],
         model_structure="parallel",  # crossnet_only, stacked, parallel, stacked_parallel
         use_low_rank_mixture=False,
         low_rank=32,
@@ -41,7 +41,7 @@ class CtrWithDCNV2Config(PretrainedConfig):
     ):
         super().__init__(**kwargs)
         self.features = features
-        self.label_name = label_name
+        self.label_names = label_names
         self.model_structure = model_structure
         self.use_low_rank_mixture = use_low_rank_mixture
         self.low_rank = low_rank
@@ -339,7 +339,7 @@ class CtrWithDCNV2(PreTrainedModel):
 
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
-        self.label_name = config.label_name
+        self.label_names = config.label_names
         self.regularizer = config.regularizer
         self.model_structure = config.model_structure
         self.use_low_rank_mixture = config.use_low_rank_mixture
@@ -442,8 +442,8 @@ class CtrWithDCNV2(PreTrainedModel):
         logits = torch.sigmoid(logits)
 
         labels = None
-        if self.label_name in kwargs:
-            labels = kwargs[self.label_name]
+        if self.label_names[0] in kwargs:
+            labels = kwargs[self.label_names[0]]
 
         if labels is None:
             return CtrModelOutput(logits=logits)

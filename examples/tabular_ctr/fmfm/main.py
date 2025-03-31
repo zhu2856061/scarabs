@@ -8,45 +8,54 @@ import os
 
 from transformers import HfArgumentParser
 
-from scarabs.args_factory import DataArguments, ModelArguments, TrainArguments
+from scarabs.args_factory import (
+    DataArguments,
+    ModelArguments,
+    TaskArguments,
+    TrainArguments,
+)
 from scarabs.mora.models.ctr_with_fmfm import CtrWithFMFM, CtrWithFMFMConfig
 from scarabs.task_factory import TaskFactoryWithTabularCtr
 
-task = TaskFactoryWithTabularCtr()
-
-# Generate a tabular mapping table named 'config. json'
-parser = HfArgumentParser((ModelArguments, DataArguments, TrainArguments))  # type: ignore
-model_args, data_args, training_args = parser.parse_json_file("arguments.json")
-config = CtrWithFMFMConfig.from_pretrained("config.json")
-task.create_feature2transformer_and_config(data_args, training_args, config)
-
-
-# Train
-parser = HfArgumentParser((ModelArguments, DataArguments, TrainArguments))  # type: ignore
-model_args, data_args, training_args = parser.parse_json_file("arguments.json")
-config = CtrWithFMFMConfig.from_pretrained(
-    os.path.join(data_args.dataset_cache, "meta")
+parser = HfArgumentParser(
+    (TaskArguments, DataArguments, ModelArguments, TrainArguments)  # type: ignore
 )
-model = CtrWithFMFM(config)
-task.train(model_args, data_args, training_args, model=model, config=config)
+task_args, data_args, model_args, training_args = parser.parse_json_file(
+    "arguments.json"
+)
+
+# # Generate a tabular mapping table named 'config.json'
+config = CtrWithFMFMConfig.from_pretrained("config.json")
+task = TaskFactoryWithTabularCtr(task_args, data_args, None, None, config)
+task.create_feature2transformer_and_config()
+
+# # Train
+config = CtrWithFMFMConfig.from_pretrained(
+    os.path.join(
+        task_args.task_name_or_path, data_args.dataset_cache, "meta/config.json"
+    )
+)
+task = TaskFactoryWithTabularCtr(
+    task_args, data_args, model_args, training_args, config
+)
+task.train(model=CtrWithFMFM(config))
 
 
 # # Predict
-# model_path = "./encode/model/checkpoint-33957"
-# task.inference_with_load_model(model_path, CtrWithLR)
+# task = TaskFactoryWithTabularCtr()
+# model_path = "./encode/model"
+# task.inference_with_load_model(model_path, CtrWithFM)
 
 # import pandas as pd
+# from sklearn.metrics import roc_auc_score
 
 # preds = []
 # label = []
-# ds = pd.read_csv("../../data/movielens/test/test.csv")
+# ds = pd.read_csv("../../data/movielens/valid/valid.csv")
 # for line in ds.to_dict("records"):
 #     label.append(line["label"])
 #     res = task.inference(X=line)
 #     preds.append(res["logits"][0].item())
-
-# from sklearn.metrics import roc_auc_score
-
 # print(roc_auc_score(label, preds))
 
 

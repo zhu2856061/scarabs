@@ -173,22 +173,8 @@ class FloorLogBucket2Feature(Feature):
 
 # For table data, convert it into the input format required by the model
 class Feature2Transformer:
-    def __init__(self, meta_dir: str = "./meta"):
-        self.meta_dir = meta_dir
+    def __init__(self):
         self.feature2meta = OrderedDict()
-
-    def create_meta(self, params):
-        for item in params:
-            name = item["name"]
-            if item["target"] == "Hash2Feature":
-                obj = Hash2Feature(**item)
-                self.feature2meta[name] = obj
-            if item["target"] == "MinMaxBucket2Feature":
-                obj = MinMaxBucket2Feature(**item)
-                self.feature2meta[name] = obj
-            if item["target"] == "FloorLogBucket2Feature":
-                obj = FloorLogBucket2Feature(**item)
-                self.feature2meta[name] = obj
 
     def build_meta(self, example):
         for name, fea in self.feature2meta.items():
@@ -224,24 +210,28 @@ class Feature2Transformer:
                 new_example[name] = self.feature2meta[fea.shared_embed_name].handle(tmp)
         return new_example
 
-    def save_meta(self):
+    def save_meta(self, meta_file):
         # 转json
         obj_dict = {}
         for name, fea in self.feature2meta.items():
             obj_dict[name] = fea.__dict__
 
-        os.makedirs(self.meta_dir, exist_ok=True)
-        with open(os.path.join(self.meta_dir, "feature2meta.json"), "w") as f:
+        with open(os.path.join(meta_file), "w") as f:
             json.dump(obj_dict, f)
 
-    def load_meta(self, config=None):
-        if config is None:
-            if not os.path.exists(os.path.join(self.meta_dir, "feature2meta.json")):
-                raise ValueError(f">>>>> file: {self.meta_dir} not exists <<<<<")
+    def create_and_load_meta(self, meta_dir=None, config=None):
+        if meta_dir is not None:
+            #
+            if not os.path.exists(meta_dir):
+                raise ValueError(f">>>>> file: {meta_dir} not exists <<<<<")
 
-            with open(os.path.join(self.meta_dir, "feature2meta.json"), "r") as f:
+            with open(meta_dir, "r") as f:
                 feature2meta_json = json.load(f)
-                for item, value in feature2meta_json.items():
+                if feature2meta_json.get("features") is None:
+                    raise ValueError(
+                        ">>>>> feature2meta json is error: features is None <<<<<"
+                    )
+                for item, value in feature2meta_json["features"].items():
                     if value["target"] == "Hash2Feature":
                         self.feature2meta[item] = Hash2Feature(**value)
                     if value["target"] == "MinMaxBucket2Feature":
@@ -250,12 +240,13 @@ class Feature2Transformer:
                         self.feature2meta[item] = FloorLogBucket2Feature(**value)
 
                 assert len(self.feature2meta) == len(
-                    feature2meta_json
+                    feature2meta_json["features"]
                 ), ">>>>> feature2meta unmatched <<<<<"
 
-        else:
+        elif config is not None:
             if config.features is None:
                 raise ValueError(">>>>> config.features is None <<<<<")
+
             for item, value in config.features.items():
                 if value["target"] == "Hash2Feature":
                     self.feature2meta[item] = Hash2Feature(**value)
@@ -267,3 +258,5 @@ class Feature2Transformer:
             assert len(self.feature2meta) == len(
                 config.features
             ), ">>>>> feature2meta unmatched <<<<<"
+        else:
+            raise ValueError(">>>>> meta_dir and config are None <<<<<")

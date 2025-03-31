@@ -25,7 +25,7 @@ class CtrWithDeepIMConfig(PretrainedConfig):
     def __init__(
         self,
         features=None,
-        label_name="label",
+        label_names=["label"],
         embedding_dim=8,
         im_order=2,
         im_batch_norm=False,
@@ -37,7 +37,7 @@ class CtrWithDeepIMConfig(PretrainedConfig):
     ):
         super().__init__(**kwargs)
         self.features = features
-        self.label_name = label_name
+        self.label_names = label_names
         self.embedding_dim = embedding_dim
         self.im_order = im_order
         self.im_batch_norm = im_batch_norm
@@ -241,7 +241,7 @@ class CtrWithDeepIM(PreTrainedModel):
 
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
-        self.label_name = config.label_name
+        self.label_names = config.label_names
         self.regularizer = config.regularizer
         self.num_fields = len(config.features)
         self.hidden_dim = self.num_fields * config.embedding_dim
@@ -293,8 +293,8 @@ class CtrWithDeepIM(PreTrainedModel):
         logits = torch.sigmoid(_im_out + _dnn_out)
 
         labels = None
-        if self.label_name in kwargs:
-            labels = kwargs[self.label_name]
+        if self.label_names[0] in kwargs:
+            labels = kwargs[self.label_names[0]]
 
         if labels is None:
             return CtrModelOutput(logits=logits)

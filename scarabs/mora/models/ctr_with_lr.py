@@ -25,13 +25,13 @@ class CtrWithLRConfig(PretrainedConfig):
     def __init__(
         self,
         features=None,
-        label_name="label",
+        label_names=["label"],
         regularizer=5e-06,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.features = features
-        self.label_name = label_name
+        self.label_names = label_names
         self.regularizer = regularizer
 
 
@@ -105,7 +105,7 @@ class CtrWithLR(PreTrainedModel):
 
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
-        self.label_name = config.label_name
+        self.label_names = config.label_names
         self.regularizer = config.regularizer
 
         #  define embedding layer
@@ -126,8 +126,8 @@ class CtrWithLR(PreTrainedModel):
         logits = torch.sigmoid(logits)
 
         labels = None
-        if self.label_name in kwargs:
-            labels = kwargs[self.label_name]
+        if self.label_names[0] in kwargs:
+            labels = kwargs[self.label_names[0]]
 
         if labels is None:
             return CtrModelOutput(logits=logits)

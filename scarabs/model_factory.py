@@ -230,6 +230,17 @@ class ModelFactory:
         logger.info(f"Total parameters: {total_params}({total}M)")
 
 
+class ModelFactoryWithInference(ModelFactory):
+    def _weight_init(self, model: PreTrainedModel, model_name_or_path=None):
+        return self._load_state_dict(model, model_name_or_path)
+
+    def _model_setup(self, model: PreTrainedModel):
+        for _, param in model.named_parameters():
+            param.requires_grad = False
+        self._calulate_parameters(model)
+        return model
+
+
 class ModelFactoryWithPretrain(ModelFactory):
     def handle(self):
         self._init_model()
@@ -279,7 +290,7 @@ class ModelFactoryWithSFTtrain(ModelFactory):
             if name == "LoraConfig":
                 self._set_lora_module_names(model, peft_config)
 
-            self._prepare_peft_model(model, peft_config, conf)
+            model = self._prepare_peft_model(model, peft_config, conf)  # type: ignore
         return model
 
     def _prepare_peft_model(self, model, peft_config, args):

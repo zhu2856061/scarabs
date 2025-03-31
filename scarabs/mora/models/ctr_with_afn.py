@@ -25,7 +25,7 @@ class CtrWithAFNConfig(PretrainedConfig):
     def __init__(
         self,
         features=None,
-        label_name="label",
+        label_names=["label"],
         embedding_dim=8,
         ensemble_dnn=True,
         dnn_hidden_units=[64, 64, 64],
@@ -38,7 +38,7 @@ class CtrWithAFNConfig(PretrainedConfig):
     ):
         super().__init__(**kwargs)
         self.features = features
-        self.label_name = label_name
+        self.label_names = label_names
         self.embedding_dim = embedding_dim
         self.ensemble_dnn = ensemble_dnn
         self.dnn_hidden_units = dnn_hidden_units
@@ -184,7 +184,7 @@ class CtrWithAFN(PreTrainedModel):
         super().__init__(config)
         if config.features is None:
             raise ValueError("config features must be provided")
-        self.label_name = config.label_name
+        self.label_names = config.label_names
         self.regularizer = config.regularizer
         self.dnn_hidden_units = config.dnn_hidden_units
         self.num_fields = len(config.features)
@@ -267,8 +267,8 @@ class CtrWithAFN(PreTrainedModel):
         logits = torch.sigmoid(logits)
 
         labels = None
-        if self.label_name in kwargs:
-            labels = kwargs[self.label_name]
+        if self.label_names[0] in kwargs:
+            labels = kwargs[self.label_names[0]]
 
         if labels is None:
             return CtrModelOutput(logits=logits)

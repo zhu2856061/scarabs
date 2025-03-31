@@ -26,7 +26,7 @@ class RecallWithDCLConfig(PretrainedConfig):
     def __init__(
         self,
         features=None,
-        label_name="label",
+        label_names=["label"],
         embedding_size=8,
         user_features=[],
         user_tower_units=[64, 64, 64],
@@ -46,7 +46,7 @@ class RecallWithDCLConfig(PretrainedConfig):
     ):
         super().__init__(**kwargs)
         self.features = features
-        self.label_name = label_name
+        self.label_names = label_names
         self.embedding_size = embedding_size
         self.user_features = user_features
         self.user_tower_units = user_tower_units
@@ -204,7 +204,7 @@ class RecallWithDCL(PreTrainedModel):
 
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
-        self.label_name = config.label_name
+        self.label_names = config.label_names
         self.regularizer = config.regularizer
         self.num_fields = len(config.features)
         self.user_features = config.user_features

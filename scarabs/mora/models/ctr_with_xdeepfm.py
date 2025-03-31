@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 import torch
-import torch.nn.functional as F
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.utils import ModelOutput
 
@@ -26,7 +25,7 @@ class CtrWithXDeepFMConfig(PretrainedConfig):
     def __init__(
         self,
         features=None,
-        label_name="label",
+        label_names=["label"],
         embedding_dim=8,
         dnn_hidden_units=[64, 64, 64],
         cin_layer_units=[16, 16, 16],
@@ -37,7 +36,7 @@ class CtrWithXDeepFMConfig(PretrainedConfig):
     ):
         super().__init__(**kwargs)
         self.features = features
-        self.label_name = label_name
+        self.label_names = label_names
         self.embedding_dim = embedding_dim
         self.dnn_hidden_units = dnn_hidden_units
         self.cin_layer_units = cin_layer_units
@@ -246,7 +245,7 @@ class CtrWithXdeepFM(PreTrainedModel):
 
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
-        self.label_name = config.label_name
+        self.label_names = config.label_names
         self.regularizer = config.regularizer
         self.num_fields = len(config.features)
         self.hidden_dim = self.num_fields * config.embedding_dim
@@ -302,8 +301,8 @@ class CtrWithXdeepFM(PreTrainedModel):
         logits = torch.sigmoid(logits)
 
         labels = None
-        if self.label_name in kwargs:
-            labels = kwargs[self.label_name]
+        if self.label_names[0] in kwargs:
+            labels = kwargs[self.label_names[0]]
 
         if labels is None:
             return CtrModelOutput(logits=logits)

@@ -25,7 +25,7 @@ class CtrWithFWFMConfig(PretrainedConfig):
     def __init__(
         self,
         features=None,
-        label_name="label",
+        label_names=["label"],
         hidden_dim=8,
         linear_type="FiLV",
         regularizer=5e-06,
@@ -36,7 +36,7 @@ class CtrWithFWFMConfig(PretrainedConfig):
         """
         super().__init__(**kwargs)
         self.features = features
-        self.label_name = label_name
+        self.label_names = label_names
         self.hidden_dim = hidden_dim
         self.linear_type = linear_type
         self.regularizer = regularizer
@@ -136,7 +136,7 @@ class CtrWithFWFM(PreTrainedModel):
 
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
-        self.label_name = config.label_name
+        self.label_names = config.label_names
         self.regularizer = config.regularizer
         self.linear_type = config.linear_type
 
@@ -209,8 +209,8 @@ class CtrWithFWFM(PreTrainedModel):
         logits = torch.sigmoid(logits)
 
         labels = None
-        if self.label_name in kwargs:
-            labels = kwargs[self.label_name]
+        if self.label_names[0] in kwargs:
+            labels = kwargs[self.label_names[0]]
 
         if labels is None:
             return CtrModelOutput(logits=logits)

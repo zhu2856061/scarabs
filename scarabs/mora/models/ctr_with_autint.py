@@ -24,7 +24,7 @@ class CtrWithAutoIntConfig(PretrainedConfig):
     def __init__(
         self,
         features=None,
-        label_name="label",
+        label_names=["label"],
         embedding_dim=8,
         dnn_hidden_units=[64, 64, 64],
         attention_layers=2,
@@ -40,7 +40,7 @@ class CtrWithAutoIntConfig(PretrainedConfig):
     ):
         super().__init__(**kwargs)
         self.features = features
-        self.label_name = label_name
+        self.label_names = label_names
         self.embedding_dim = embedding_dim
         self.dnn_hidden_units = dnn_hidden_units
         self.attention_layers = attention_layers
@@ -320,7 +320,7 @@ class CtrWithAutoInt(PreTrainedModel):
         super().__init__(config)
         if config.features is None:
             raise ValueError("config features must be provided")
-        self.label_name = config.label_name
+        self.label_names = config.label_names
         self.regularizer = config.regularizer
         self.num_fields = len(config.features)
 
@@ -388,8 +388,8 @@ class CtrWithAutoInt(PreTrainedModel):
         logits = torch.sigmoid(_out.view(-1) + _lr_out.view(-1) + _dnn_out.view(-1))
 
         labels = None
-        if self.label_name in kwargs:
-            labels = kwargs[self.label_name]
+        if self.label_names[0] in kwargs:
+            labels = kwargs[self.label_names[0]]
 
         if labels is None:
             return CtrModelOutput(logits=logits)

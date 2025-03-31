@@ -1,29 +1,31 @@
 {
-    "label_name": "label",
+    "label_names": [
+        "label"
+    ],
     "regularizer": 0.001,
     "embedding_dim": 10,
     "num_cross_layers": 7,
     "batch_norm": false,
     "dropout_rates": 0.0,
     "dnn_hidden_units": [],
-    "features": [
-        {
+    "features": {
+        "user_id": {
             "target": "Hash2Feature",
             "name": "user_id",
             "length": 1,
             "default": ""
         },
-        {
+        "item_id": {
             "target": "Hash2Feature",
             "name": "item_id",
             "length": 1,
             "default": ""
         },
-        {
+        "tag_id": {
             "target": "Hash2Feature",
             "name": "tag_id",
             "length": 1,
             "default": ""
         }
-    ]
+    }
 }

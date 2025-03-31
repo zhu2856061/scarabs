@@ -25,7 +25,7 @@ class CtrWithNFMConfig(PretrainedConfig):
     def __init__(
         self,
         features=None,
-        label_name="label",
+        label_names=["label"],
         embedding_size=8,
         mlp_hidden_units=[64, 64, 64],
         dropout_rates=0,
@@ -35,7 +35,7 @@ class CtrWithNFMConfig(PretrainedConfig):
     ):
         super().__init__(**kwargs)
         self.features = features
-        self.label_name = label_name
+        self.label_names = label_names
         self.embedding_size = embedding_size
         self.mlp_hidden_units = mlp_hidden_units
         self.dropout_rates = dropout_rates
@@ -209,7 +209,7 @@ class CtrWithNFM(PreTrainedModel):
 
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
-        self.label_name = config.label_name
+        self.label_names = config.label_names
         self.regularizer = config.regularizer
         self.mlp_hidden_units = config.mlp_hidden_units
 
@@ -256,8 +256,8 @@ class CtrWithNFM(PreTrainedModel):
         logits = torch.sigmoid(logits)
 
         labels = None
-        if self.label_name in kwargs:
-            labels = kwargs[self.label_name]
+        if self.label_names[0] in kwargs:
+            labels = kwargs[self.label_names[0]]
 
         if labels is None:
             return CtrModelOutput(logits=logits)

@@ -1,5 +1,7 @@
 {
-    "label_name": "label",
+    "label_names": [
+        "label"
+    ],
     "model_structure": "parallel",
     "use_low_rank_mixture": false,
     "low_rank": 32,
@@ -20,24 +22,24 @@
     "num_cross_layers": 5,
     "regularizer": 0.01,
     "dnn_hidden_units": [],
-    "features": [
-        {
+    "features": {
+        "user_id": {
             "target": "Hash2Feature",
             "name": "user_id",
             "length": 1,
             "default": ""
         },
-        {
+        "item_id": {
             "target": "Hash2Feature",
             "name": "item_id",
             "length": 1,
             "default": ""
         },
-        {
+        "tag_id": {
             "target": "Hash2Feature",
             "name": "tag_id",
             "length": 1,
             "default": ""
         }
-    ]
+    }
 }

@@ -1,5 +1,7 @@
 {
-    "label_name": "label",
+    "label_names": [
+        "label"
+    ],
     "embedding_dim": 10,
     "user_features": [
         "user_id"
@@ -17,24 +19,24 @@
     "dropout_rates": 0.2,
     "batch_norm": true,
     "regularizer": 0.01,
-    "features": [
-        {
+    "features": {
+        "user_id": {
             "target": "Hash2Feature",
             "name": "user_id",
             "length": 1,
             "default": ""
         },
-        {
+        "item_id": {
             "target": "Hash2Feature",
             "name": "item_id",
             "length": 1,
             "default": ""
         },
-        {
+        "tag_id": {
             "target": "Hash2Feature",
             "name": "tag_id",
             "length": 1,
             "default": ""
         }
-    ]
+    }
 }

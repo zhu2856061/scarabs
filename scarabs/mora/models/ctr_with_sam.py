@@ -25,7 +25,7 @@ class CtrWithSAMConfig(PretrainedConfig):
     def __init__(
         self,
         features=None,
-        label_name="label",
+        label_names=["label"],
         embedding_dim=8,
         interaction_type="SAM2E",  # option in ["SAM2A", "SAM2E", "SAM3A", "SAM3E"]
         aggregation="concat",
@@ -37,7 +37,7 @@ class CtrWithSAMConfig(PretrainedConfig):
     ):
         super().__init__(**kwargs)
         self.features = features
-        self.label_name = label_name
+        self.label_names = label_names
         self.embedding_dim = embedding_dim
         self.interaction_type = interaction_type
         self.aggregation = aggregation
@@ -328,7 +328,7 @@ class CtrWithSAM(PreTrainedModel):
         super().__init__(config)
         if config.features is None:
             raise ValueError("config features must be provided")
-        self.label_name = config.label_name
+        self.label_names = config.label_names
         self.regularizer = config.regularizer
         self.num_fields = len(config.features)
 
@@ -384,8 +384,8 @@ class CtrWithSAM(PreTrainedModel):
         logits = torch.sigmoid(logits)
 
         labels = None
-        if self.label_name in kwargs:
-            labels = kwargs[self.label_name]
+        if self.label_names[0] in kwargs:
+            labels = kwargs[self.label_names[0]]
 
         if labels is None:
             return CtrModelOutput(logits=logits)

@@ -1,25 +1,27 @@
 {
-    "label_name": "label",
+    "label_names": [
+        "label"
+    ],
     "regularizer": 1e-6,
     "hidden_dim": 10,
-    "features": [
-        {
+    "features": {
+        "user_id": {
             "target": "Hash2Feature",
             "name": "user_id",
             "length": 1,
             "default": ""
         },
-        {
+        "item_id": {
             "target": "Hash2Feature",
             "name": "item_id",
             "length": 1,
             "default": ""
         },
-        {
+        "tag_id": {
             "target": "Hash2Feature",
             "name": "tag_id",
             "length": 1,
             "default": ""
         }
-    ]
+    }
 }
