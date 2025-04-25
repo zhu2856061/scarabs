@@ -7,6 +7,7 @@ from __future__ import absolute_import, division, print_function
 
 import os
 import random
+import warnings
 from typing import Optional
 
 import datasets
@@ -60,6 +61,7 @@ from scarabs.train_factory import (
 )
 
 tqdm.pandas()
+warnings.filterwarnings("ignore")
 
 
 # task factory

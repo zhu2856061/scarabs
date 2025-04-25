@@ -39,6 +39,7 @@
     "load_best_model_at_end": false,
     "early_stopping_patience": 3,
     "early_stopping_threshold": 1e-7,
+    "incremental_resume_from_checkpoint": "./encode/model/checkpoint-343",
     "dataset_cache": "data",
     "overwrite_cache": false,
     "preprocessing_num_workers": 4,

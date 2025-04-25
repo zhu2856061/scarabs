@@ -452,7 +452,7 @@ class DataFactoryWithDPO(DataFactory):
             tokenized_datasets = dataset.map(
                 lambda _: self._tokenize_function(_, template),
                 batched=False,
-                remove_columns=["user", "chosen", "rejected"],
+                remove_columns=["prompt", "chosen", "rejected"],
                 num_proc=self.data_args.preprocessing_num_workers,
                 load_from_cache_file=not self.data_args.overwrite_cache,
                 desc="Running tokenizer on dataset",
@@ -737,3 +737,7 @@ class DataFactoryWithTabular(DataFactory):
                 X[name] = torch.tensor(X[name], dtype=torch.long)
 
         return X
+
+
+class DataFactoryWithImage(DataFactory):
+    pass

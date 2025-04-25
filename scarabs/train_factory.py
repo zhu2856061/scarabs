@@ -11,14 +11,15 @@ import os
 import sys
 from typing import Any, Dict, List, Optional, Union
 
-import faiss
 import numpy as np
 import torch
 from loguru import logger
 from prettytable import PrettyTable
 from torch.utils.data import RandomSampler
 from transformers.trainer import (
+    SAFE_WEIGHTS_NAME,
     TRAINER_STATE_NAME,
+    WEIGHTS_NAME,
     DataLoader,
     DebugOption,
     DebugUnderflowOverflow,
@@ -46,12 +47,14 @@ from transformers.trainer import (
     hp_params,
     is_accelerate_available,
     is_apex_available,
+    is_torch_greater_or_equal_than_1_13,
     is_torch_xla_available,
     math,
     nested_concat,
     nested_detach,
     nested_numpify,
     nn,
+    safetensors,
     shutil,
     skip_first_batches,
     speed_metrics,
@@ -430,6 +433,12 @@ class TrainerFactory(Trainer):
                 deepspeed_load_checkpoint(self.model_wrapped, resume_from_checkpoint)
             elif self.is_fsdp_enabled:
                 self._load_from_checkpoint(resume_from_checkpoint, self.model_wrapped)
+
+        # Incremental ckpt loading
+        if args.incremental_resume_from_checkpoint:
+            self._incremental_load_from_checkpoint(
+                args.incremental_resume_from_checkpoint, self.model_wrapped
+            )
 
         # Check if saved optimizer or scheduler states exist
         self._load_optimizer_and_scheduler(resume_from_checkpoint)
@@ -1503,6 +1512,61 @@ class TrainerFactory(Trainer):
 
         return (loss, outputs) if return_outputs else loss
 
+    def _incremental_load_from_checkpoint(
+        self, incremental_resume_from_checkpoint, model=None
+    ):
+        if model is None:
+            model = self.model
+        safe_weights_file = os.path.join(
+            incremental_resume_from_checkpoint, SAFE_WEIGHTS_NAME
+        )
+        weights_file = os.path.join(incremental_resume_from_checkpoint, WEIGHTS_NAME)
+        weights_only_kwarg = (
+            {"weights_only": True} if is_torch_greater_or_equal_than_1_13 else {}
+        )
+        # We load the model state dict on the CPU to avoid an OOM error.
+        if self.args.save_safetensors and os.path.isfile(safe_weights_file):
+            state_dict = safetensors.torch.load_file(safe_weights_file, device="cpu")
+        else:
+            state_dict = torch.load(
+                weights_file,
+                map_location="cpu",
+                **weights_only_kwarg,
+            )
+
+        # load 之前需要对state_dict（历史部分+增量部分）即改变size不一样部分的权重
+        model_dict = model.state_dict()
+        mismatched_key = []
+        for v in model_dict.keys():
+            for k in state_dict.keys():
+                if v == k and model_dict[v].shape != state_dict[k].shape:
+                    logger.warning(
+                        f"{v} shape mismatched, current: {model_dict[v].shape} != history:{state_dict[k].shape}"
+                    )
+                    mismatched_key.append(k)
+
+        # 修改历史部分- size不一样部分,注：这里的不一致只针对第一维度
+        for key in mismatched_key:
+            current_size = model_dict[key].size()
+            history_size = state_dict[key].size()
+            if current_size[0] > history_size[0]:
+                model_dict[key][: history_size[0], :] = state_dict[key]
+                state_dict[key] = model_dict[key]
+
+            if current_size[0] < history_size[0]:
+                model_dict[key] = state_dict[key][: current_size[0], :]
+                state_dict[key] = model_dict[key]
+            logger.warning(
+                f"{key} is updated from history:{history_size} to current:{current_size}"
+            )
+
+        # workaround for FSDP bug https://github.com/pytorch/pytorch/issues/82963
+        # which takes *args instead of **kwargs
+        load_result = model.load_state_dict(state_dict, False)
+        # release memory
+        del state_dict
+        self._issue_warnings_after_load(load_result)
+
 
 # LLM Pre training
 class TrainerFactoryWithPretrain(TrainerFactory):
@@ -1646,11 +1710,6 @@ class TrainerFactoryWithTabular(TrainerFactory):
     pass
 
 
-# Tabular recall
-class TrainerFactoryWithTabularRecall(TrainerFactory):
-    pass
-
-
 # Tabular recall2
 class TrainerFactoryWithTabularRecall2(TrainerFactory):
     def training_step(
@@ -1757,6 +1816,7 @@ class TrainerFactoryWithTabularRecall2(TrainerFactory):
 
         # Will be useful when we have an iterable dataset so don't know its length.
         observed_num_examples = 0
+        import faiss
 
         # 获得 item embs 矩阵， 并将其喂入 faiss 索引
         with torch.no_grad():

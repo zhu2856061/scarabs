@@ -29,6 +29,7 @@ task_args, data_args, model_args, training_args = parser.parse_json_file(
 
 # # Generate a tabular mapping table named 'config.json'
 config = CtrWithFMConfig.from_pretrained("config.json")
+
 task = TaskFactoryWithTabularCtr(task_args, data_args, None, None, config)
 task.create_feature2transformer_and_config()
 

@@ -344,6 +344,10 @@ class TrainArguments(TrainingArguments):
         default=0.1,
         metadata={"help": "alpha for distillation, default 0.0"},
     )
+    incremental_resume_from_checkpoint: Optional[str] = field(
+        default=None,
+        metadata={"help": "incremental resume from checkpoint"},
+    )
 
 
 @dataclass
